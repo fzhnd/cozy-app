@@ -23,6 +23,15 @@ export default function AuthModal({
   useEffect(() => {
     setIsLoginMode(initialMode === 'login');
   }, [initialMode, isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -96,23 +105,28 @@ export default function AuthModal({
 
   return (
     <div 
+      onClick={onClose}
       style={{ backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xl transition-all p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xl transition-all p-4 animate-in fade-in duration-200 cursor-pointer"
     >
-      <div className="bg-[#150A35] border border-white/10 p-8 sm:p-9 rounded-[36px] shadow-[0_0_50px_rgba(0,0,0,0.9),0_0_30px_rgba(165,119,255,0.15)] w-full max-w-[440px] relative">
-        {/* Close Button */}
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[#150A35] border border-white/10 p-8 pt-9 sm:p-9 sm:pt-10 rounded-[36px] shadow-[0_0_50px_rgba(0,0,0,0.9),0_0_30px_rgba(165,119,255,0.15)] w-full max-w-[440px] relative cursor-default"
+      >
+        {/* Close Button (Lebih ke atas & di pojok kanan agar tidak menumpuk dengan banner) */}
         <button 
           onClick={onClose} 
-          className="absolute top-6 right-6 text-gray-400 hover:text-white transition-colors p-1"
+          className="absolute top-4 right-5 w-8 h-8 rounded-full bg-white/5 hover:bg-white/15 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white transition-all cursor-pointer z-30 active:scale-95"
+          title="Close (Esc)"
         >
-          <X size={22} />
+          <X size={18} />
         </button>
         
         {/* Prompt Message Banner (Ketika fitur diklik sebelum login) */}
         {promptMessage && (
-          <div className="mb-4 px-3.5 py-2.5 rounded-2xl bg-[#A577FF]/15 border border-[#A577FF]/30 text-[#D8C2FF] text-xs font-semibold flex items-center gap-2.5 animate-in fade-in slide-in-from-top-1">
+          <div className="mb-5 mt-1 mr-8 px-3.5 py-2.5 rounded-2xl bg-[#A577FF]/15 border border-[#A577FF]/30 text-[#D8C2FF] text-xs font-semibold flex items-center gap-2.5 animate-in fade-in slide-in-from-top-1">
             <Sparkles size={16} className="text-[#A577FF] shrink-0" />
-            <span>{promptMessage}</span>
+            <span className="leading-snug">{promptMessage}</span>
           </div>
         )}
 
