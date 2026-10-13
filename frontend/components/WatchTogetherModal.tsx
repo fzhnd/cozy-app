@@ -120,13 +120,17 @@ interface WatchTogetherModalProps {
   onClose: () => void;
   currentUser?: { name: string; avatar: string };
   roomMembers?: Array<{ name: string; avatar: string; isHost?: boolean }>;
+  friendsList?: any[];
+  initialFriend?: any;
 }
 
 export default function WatchTogetherModal({
   isOpen,
   onClose,
   currentUser = { name: 'You', avatar: 'https://api.dicebear.com/7.x/adventurer/svg?seed=Leo' },
-  roomMembers = []
+  roomMembers = [],
+  friendsList = [],
+  initialFriend
 }: WatchTogetherModalProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeVideo, setActiveVideo] = useState<WatchVideo | null>(null);
@@ -157,23 +161,47 @@ export default function WatchTogetherModal({
     }
   }, [roomMembers]);
 
-  // Combine room members & mock friends for invite list
+  // Sync initialFriend if opening from invitation notification
+  useEffect(() => {
+    if (initialFriend) {
+      setJoinedUsers(prev => {
+        if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
+          return [...prev, { name: initialFriend.name, avatar: initialFriend.avatar, status: 'joined' }];
+        }
+        return prev;
+      });
+      setToastMessage(`Joined Watch Together with ${initialFriend.name}`);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
+  }, [initialFriend]);
+
+  // Combine real friends, room members & mock friends for invite list
   const availableFriends = React.useMemo(() => {
     const list: Array<{ name: string; avatar: string }> = [];
+    if (friendsList && friendsList.length > 0) {
+      friendsList.forEach(f => {
+        if (f.name !== currentUser.name && !list.some(item => item.name.toLowerCase() === f.name.toLowerCase())) {
+          list.push({
+            name: f.name,
+            avatar: f.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}`
+          });
+        }
+      });
+    }
     if (roomMembers && roomMembers.length > 0) {
       roomMembers.forEach(m => {
-        if (m.name !== currentUser.name && !list.some(f => f.name === m.name)) {
+        if (m.name !== currentUser.name && !list.some(f => f.name.toLowerCase() === m.name.toLowerCase())) {
           list.push({ name: m.name, avatar: m.avatar });
         }
       });
     }
     MOCK_FRIENDS.forEach(m => {
-      if (m.name !== currentUser.name && !list.some(f => f.name === m.name)) {
+      if (m.name !== currentUser.name && !list.some(f => f.name.toLowerCase() === m.name.toLowerCase())) {
         list.push({ name: m.name, avatar: m.avatar });
       }
     });
     return list;
-  }, [roomMembers, currentUser.name]);
+  }, [friendsList, roomMembers, currentUser.name]);
 
   const handleInviteFriend = (friend: { name: string; avatar: string }) => {
     if (joinedUsers.some(u => u.name === friend.name)) return;
@@ -181,7 +209,18 @@ export default function WatchTogetherModal({
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
-    // 2. After 2.5s, they officially join and blinking stops!
+    // Send persistent invitation to Supabase PostgreSQL
+    fetch('/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        receiverName: friend.name,
+        type: 'activity',
+        targetName: 'Watch Together'
+      })
+    }).catch(err => console.error("Error sending watch invitation:", err));
+
+    // 2. Demo bot fallback: after 2.5s, they officially join
     setTimeout(() => {
       setJoinedUsers(prev => prev.map(u => u.name === friend.name ? { ...u, status: 'joined' } : u));
     }, 2500);

@@ -9,11 +9,17 @@ import CallModal from './CallModal';
 export default function ChatView({ 
   onUnreadCountChange, 
   initialActiveChat,
-  initialCallOpen
+  initialCallOpen,
+  friendsList = [],
+  currentUser = '',
+  userImage = ''
 }: { 
   onUnreadCountChange?: (count: number) => void;
   initialActiveChat?: string;
   initialCallOpen?: 'audio' | 'video' | false;
+  friendsList?: any[];
+  currentUser?: string;
+  userImage?: string;
 }) {
   const [isAttachmentOpen, setIsAttachmentOpen] = useState(false);
   const [isEmojiOpen, setIsEmojiOpen] = useState(false);
@@ -235,10 +241,99 @@ export default function ChatView({
   }, [messagesByChat, isLoaded]);
 
   const [activeChatName, setActiveChatName] = useState(initialActiveChat || 'Luna');
-  
+
+  // Synchronize friendsList into chats list
   useEffect(() => {
-    if (initialActiveChat) setActiveChatName(initialActiveChat);
-  }, [initialActiveChat]);
+    if (!friendsList || friendsList.length === 0) return;
+    setChats(prev => {
+      const updated = [...prev];
+      friendsList.forEach(f => {
+        const existing = updated.find(c => c.name.toLowerCase() === f.name.toLowerCase());
+        const avatarUrl = f.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}`;
+        if (!existing) {
+          updated.push({
+            name: f.name,
+            msg: f.label || 'Online friend',
+            time: 'Active',
+            seed: f.seed || f.name,
+            color: f.color || 'A577FF',
+            pinned: false,
+            lastUpdated: Date.now(),
+            unreadCount: 0,
+            avatar: avatarUrl,
+            isRealFriend: f.isRealFriend
+          } as any);
+        } else if (avatarUrl && !(existing as any).avatar) {
+          (existing as any).avatar = avatarUrl;
+        }
+      });
+      return updated;
+    });
+  }, [friendsList]);
+  
+  // Handle initialActiveChat changes (e.g. clicking friend on sidebar or search)
+  useEffect(() => {
+    if (initialActiveChat) {
+      setActiveChatName(initialActiveChat);
+      setChats(prev => {
+        if (!prev.some(c => c.name.toLowerCase() === initialActiveChat.toLowerCase())) {
+          const foundFriend = friendsList?.find(f => f.name.toLowerCase() === initialActiveChat.toLowerCase());
+          const avatarUrl = foundFriend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${foundFriend?.seed || initialActiveChat}&backgroundColor=${foundFriend?.color || 'A577FF'}`;
+          return [{
+            name: initialActiveChat,
+            msg: 'Direct conversation',
+            time: 'Just now',
+            seed: foundFriend?.seed || initialActiveChat,
+            color: foundFriend?.color || 'A577FF',
+            pinned: false,
+            lastUpdated: Date.now(),
+            unreadCount: 0,
+            avatar: avatarUrl,
+            isRealFriend: foundFriend?.isRealFriend
+          } as any, ...prev];
+        }
+        return prev;
+      });
+    }
+  }, [initialActiveChat, friendsList]);
+
+  // Real-time polling messages for active chat from Supabase PostgreSQL
+  useEffect(() => {
+    if (!activeChatName) return;
+
+    let isMounted = true;
+    const fetchDirectMessages = async () => {
+      try {
+        const res = await fetch(`/api/chat/messages?with=${encodeURIComponent(activeChatName)}`);
+        const data = await res.json();
+        if (isMounted && data.success && Array.isArray(data.messages) && data.messages.length > 0) {
+          setMessagesByChat(prev => ({
+            ...prev,
+            [activeChatName]: data.messages
+          }));
+          const last = data.messages[data.messages.length - 1];
+          if (last) {
+            setChats(prev => prev.map(c => 
+              c.name.toLowerCase() === activeChatName.toLowerCase()
+                ? { ...c, msg: last.text || (last.type === 'voice' ? 'Voice message' : 'Message'), time: last.time }
+                : c
+            ));
+          }
+        }
+      } catch (err) {
+        // Silently catch polling error
+      }
+    };
+
+    fetchDirectMessages();
+    const pollInterval = setInterval(fetchDirectMessages, 2500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [activeChatName]);
+
   const [emojiSearchText, setEmojiSearchText] = useState('');
   
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
@@ -254,8 +349,17 @@ export default function ChatView({
     }
   }, [chats, isLoaded, activeChatName, onUnreadCountChange]);
 
-  const activeChat = chats.find(c => c.name === activeChatName) || chats[0];
-  const activeMessages = messagesByChat[activeChat?.name] || [];
+  const activeChat = chats.find(c => c.name.toLowerCase() === activeChatName.toLowerCase()) || {
+    name: activeChatName,
+    msg: '',
+    time: '',
+    seed: activeChatName,
+    color: 'A577FF',
+    avatar: `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChatName}&backgroundColor=A577FF`,
+    pinned: false,
+    unreadCount: 0
+  };
+  const activeMessages = messagesByChat[activeChat?.name] || messagesByChat[activeChatName] || [];
 
   const togglePin = () => {
     setChats(prev => prev.map(c => c.name === activeChatName ? { ...c, pinned: !c.pinned } : c));
@@ -328,6 +432,19 @@ export default function ChatView({
         setRecordingTime(0);
         setRecordedAudioUrl(null);
         setIsPreviewPlaying(false);
+
+        // Sync voice message to Supabase PostgreSQL
+        fetch('/api/chat/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            receiverName: activeChatName,
+            text: 'Voice message',
+            type: 'voice',
+            audioUrl: url,
+            duration: recordingTime
+          })
+        }).catch(err => console.error("Failed to post voice message to Supabase:", err));
       };
 
       const sendAsBase64 = () => {
@@ -370,25 +487,39 @@ export default function ChatView({
       }));
       updateChatInfo(activeChatName, sentText, newMsg.time);
       setInputText('');
+
+      // Sync message to Supabase PostgreSQL
+      fetch('/api/chat/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          receiverName: activeChatName,
+          text: sentText,
+          type: 'text'
+        })
+      }).catch(err => console.error("Failed to post message to Supabase:", err));
       
-      // Auto-reply to simulate incoming message
-      setTimeout(() => {
-        const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const replyMsg = {
-          id: Date.now() + 1,
-          text: `Auto-reply for: "${sentText}"`,
-          type: 'text',
-          time: replyTime,
-          isSelf: false
-        };
-        
-        setMessagesByChat(prev => ({
-          ...prev,
-          [activeChatName]: [...(prev[activeChatName] || []), replyMsg]
-        }));
-        
-        updateChatInfo(activeChatName, replyMsg.text, replyTime, true);
-      }, 2000);
+      // Auto-reply to simulate incoming message ONLY for demo bots
+      const isDemoBot = ['Luna', 'Jasper', 'Mimi', 'Felix'].includes(activeChatName);
+      if (isDemoBot) {
+        setTimeout(() => {
+          const replyTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const replyMsg = {
+            id: Date.now() + 1,
+            text: `Auto-reply for: "${sentText}"`,
+            type: 'text',
+            time: replyTime,
+            isSelf: false
+          };
+          
+          setMessagesByChat(prev => ({
+            ...prev,
+            [activeChatName]: [...(prev[activeChatName] || []), replyMsg]
+          }));
+          
+          updateChatInfo(activeChatName, replyMsg.text, replyTime, true);
+        }, 2000);
+      }
     }
   };
 
@@ -406,12 +537,22 @@ export default function ChatView({
     if (remaining.length > 0) setActiveChatName(remaining[0].name);
   };
 
-  const startNewChat = (friend: { name: string, seed: string, color: string }) => {
+  const startNewChat = (friend: { name: string, seed: string, color: string, avatar?: string }) => {
     setIsNewChatOpen(false);
-    if (!chats.find(c => c.name === friend.name)) {
-      setChats([{ name: friend.name, msg: 'Started a new chat', time: 'Just now', seed: friend.seed, color: friend.color, pinned: false, lastUpdated: Date.now(), unreadCount: 0 }, ...chats]);
+    if (!chats.find(c => c.name.toLowerCase() === friend.name.toLowerCase())) {
+      setChats([{ 
+        name: friend.name, 
+        msg: 'Started a new chat', 
+        time: 'Just now', 
+        seed: friend.seed, 
+        color: friend.color, 
+        pinned: false, 
+        lastUpdated: Date.now(), 
+        unreadCount: 0,
+        avatar: friend.avatar 
+      } as any, ...chats]);
     } else {
-      setChats(prev => prev.map(c => c.name === friend.name ? { ...c, unreadCount: 0 } : c));
+      setChats(prev => prev.map(c => c.name.toLowerCase() === friend.name.toLowerCase() ? { ...c, unreadCount: 0 } : c));
     }
     setActiveChatName(friend.name);
   };
@@ -454,17 +595,20 @@ export default function ChatView({
                    <h4 className="text-white text-xs font-bold uppercase tracking-wider">Start New Chat</h4>
                  </div>
                  <div className="max-h-64 overflow-y-auto custom-scrollbar p-2 space-y-1">
-                   {[
+                   {(friendsList && friendsList.length > 0 ? friendsList : [
                      { name: 'Aneka', seed: 'Aneka', color: 'A577FF' },
                      { name: 'Felix', seed: 'Felix', color: 'F2C8F7' },
                      { name: 'Oscar', seed: 'Oscar', color: 'A577FF' },
                      { name: 'Sasha', seed: 'Sasha', color: '8CC6C5' }
-                   ].map((f, i) => (
-                     <div key={i} onClick={() => startNewChat(f)} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors">
-                       <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed}&backgroundColor=${f.color}`} className="w-8 h-8 rounded-full border border-[#150A35] object-cover" alt={f.name}/>
-                       <span className="text-sm font-medium text-gray-200">{f.name}</span>
-                     </div>
-                   ))}
+                   ]).map((f: any, i: number) => {
+                     const avatarSrc = f.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}`;
+                     return (
+                       <div key={i} onClick={() => startNewChat({ name: f.name, seed: f.seed || f.name, color: f.color || 'A577FF', avatar: avatarSrc } as any)} className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors">
+                         <img src={avatarSrc} className="w-8 h-8 rounded-full border border-[#150A35] object-cover" alt={f.name}/>
+                         <span className="text-sm font-medium text-gray-200">{f.name}</span>
+                       </div>
+                     );
+                   })}
                  </div>
                </div>
              )}
@@ -478,7 +622,7 @@ export default function ChatView({
             }).map((c, i) => (
               <div key={i} onClick={() => handleChatClick(c.name)} className={`flex items-center gap-4 p-3 rounded-2xl cursor-pointer transition-colors ${activeChatName === c.name ? 'bg-[#A577FF]/20 border border-[#A577FF]/30' : 'hover:bg-white/5 border border-transparent'}`}>
                 <div className="relative">
-                  <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${c.seed}&backgroundColor=${c.color}`} className="w-12 h-12 rounded-full object-cover shadow-md border border-[#150A35]" alt={c.name} />
+                  <img src={(c as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${c.seed}&backgroundColor=${c.color}`} className="w-12 h-12 rounded-full object-cover shadow-md border border-[#150A35]" alt={c.name} />
                   {(c.unreadCount || 0) > 0 && activeChatName !== c.name && (
                     <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-[#A577FF] border-2 border-[#150A35] rounded-full shadow-md"></span>
                   )}
@@ -503,7 +647,7 @@ export default function ChatView({
          {/* Header Chat */}
          <div className="h-20 border-b border-white/5 flex items-center justify-between px-8 shrink-0 bg-[#150A35]/80 backdrop-blur-md z-10">
             <div className="flex items-center gap-4">
-               <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed}&backgroundColor=${activeChat.color}`} className="w-10 h-10 rounded-full object-cover border-2 border-[#150A35]" alt={activeChat.name} />
+               <img src={(activeChat as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed || activeChat.name}&backgroundColor=${activeChat.color || 'A577FF'}`} className="w-10 h-10 rounded-full object-cover border-2 border-[#150A35]" alt={activeChat.name} />
                <div>
                  <h2 className="text-white font-bold text-lg leading-tight">{activeChat.name}</h2>
                  <span className="text-green-400 text-xs font-medium">Online</span>
@@ -612,7 +756,7 @@ export default function ChatView({
                 </div>
               ) : (
                 <div key={m.id} id={`message-${m.id}`} className="flex items-end gap-3 w-3/4 animate-in fade-in slide-in-from-left-2">
-                   <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed}&backgroundColor=${activeChat.color}`} className="w-8 h-8 rounded-full mb-1 border border-[#150A35]" alt={activeChat.name} />
+                   <img src={(activeChat as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed || activeChat.name}&backgroundColor=${activeChat.color || 'A577FF'}`} className="w-8 h-8 rounded-full mb-1 border border-[#150A35]" alt={activeChat.name} />
                    <div className="bg-white/5 border border-white/10 rounded-2xl rounded-bl-none p-4 text-sm text-gray-300 break-words">
                      {m.text}
                    </div>
@@ -842,7 +986,7 @@ export default function ChatView({
       <div className="w-72 border-l border-white/5 bg-[#0D0524]/30 shrink-0 flex flex-col h-full overflow-hidden">
          {/* Profile */}
          <div className="p-6 flex flex-col items-center border-b border-white/5 shrink-0">
-           <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed}&backgroundColor=${activeChat.color}`} className="w-20 h-20 rounded-full object-cover mb-3 shadow-lg border-4 border-[#150A35]" alt={activeChat.name} />
+           <img src={(activeChat as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed || activeChat.name}&backgroundColor=${activeChat.color || 'A577FF'}`} className="w-20 h-20 rounded-full object-cover mb-3 shadow-lg border-4 border-[#150A35]" alt={activeChat.name} />
            <h3 className="text-lg font-bold text-white">{activeChat.name}</h3>
          </div>
 
@@ -1049,7 +1193,7 @@ export default function ChatView({
         onClose={() => setIsCallOpen(false)} 
         onCallEnd={handleCallEnd}
         contactName={activeChat.name} 
-        contactImage={`https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed}&backgroundColor=${activeChat.color}`} 
+        contactImage={(activeChat as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeChat.seed || activeChat.name}&backgroundColor=${activeChat.color || 'A577FF'}`} 
         initialVideoCall={initialVideoMode}
       />
     </div>

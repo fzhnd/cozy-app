@@ -42,11 +42,15 @@ export default function FriendProfileModal({
 
         {/* Avatar */}
         <div className="w-24 h-24 rounded-full p-1 bg-gradient-to-b from-[#A577FF] to-transparent shadow-[0_0_20px_rgba(165,119,255,0.3)] mb-4 mt-2">
-          <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=${friend.color}`} alt={friend.seed} className="w-full h-full rounded-full object-cover border-4 border-[#150A35]" />
+          <img 
+            src={friend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.name || friend.seed}&backgroundColor=${friend.color || 'A577FF'}`} 
+            alt={friend.name || friend.seed} 
+            className="w-full h-full rounded-full object-cover border-4 border-[#150A35]" 
+          />
         </div>
 
         {/* Username */}
-        <h3 className="text-2xl font-bold text-white mb-1">{friend.seed}</h3>
+        <h3 className="text-2xl font-bold text-white mb-1">{friend.name || friend.seed}</h3>
         <p className="text-xs text-gray-400 mb-8">
           {friend.status === 'bg-red-500' || friend.label === 'In Game'
             ? (friend.gameName || 'Elden Ring')

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Search, MessageSquare, Users, User, LogOut, 
   Bell, Home, Activity, PlayCircle, MoreHorizontal, Plus, Music, Gamepad2, Check, X,
@@ -434,6 +434,17 @@ export default function CozyApp() {
     setGroups(prev => {
       const updated = prev.map(g => {
         if (g.id === groupId) {
+          const ch = g.channels.find(c => c.id === channelId);
+          if (ch) {
+            fetch('/api/channels/public', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                channel: { ...ch, isPublic },
+                group: g
+              })
+            }).catch(e => console.error("Error syncing public channel to Supabase:", e));
+          }
           return {
             ...g,
             channels: g.channels.map(c => c.id === channelId ? { ...c, isPublic } : c)
@@ -504,13 +515,43 @@ export default function CozyApp() {
 
   const currentGroup = groups.find(g => g.id === activeGroupId) || groups[0];
   
+  // Community public channels from Supabase PostgreSQL
+  const [communityPublicChannels, setCommunityPublicChannels] = useState<any[]>([]);
+
+  const fetchCommunityPublicChannels = () => {
+    fetch('/api/channels/public')
+      .then(res => res.json())
+      .then(res => {
+        if (res.success && Array.isArray(res.channels)) {
+          setCommunityPublicChannels(res.channels);
+        }
+      })
+      .catch(err => console.error("Error fetching community public channels:", err));
+  };
+
+  useEffect(() => {
+    fetchCommunityPublicChannels();
+    const interval = setInterval(fetchCommunityPublicChannels, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Public Channels for Dashboard
-  const publicChannels = groups.flatMap(g => 
+  const localPublicChannels = groups.flatMap(g => 
     g.channels.filter(c => c.isPublic).map(c => ({
       ...c,
       group: g
     }))
   );
+
+  const publicChannels = React.useMemo(() => {
+    const combined = [...localPublicChannels];
+    communityPublicChannels.forEach(cp => {
+      if (!combined.some(c => c.id === cp.id)) {
+        combined.push(cp);
+      }
+    });
+    return combined;
+  }, [localPublicChannels, communityPublicChannels]);
 
   const filteredPublicChannels = publicChannels.filter(c => 
     c.name.toLowerCase().includes(publicChannelSearch.toLowerCase()) ||
@@ -519,6 +560,15 @@ export default function CozyApp() {
 
   const handleJoinPublicChannel = (channel: any) => {
     requireAuth(() => {
+      if (!groups.some(g => g.id === channel.group?.id)) {
+        const joinedGrp: GroupData = {
+          id: channel.group?.id || `group_${Date.now()}`,
+          name: channel.group?.name || 'Community Group',
+          icon: channel.group?.icon || '#1',
+          channels: [{ id: channel.id, name: channel.name, isPublic: true, users: 1 }]
+        };
+        setGroups(prev => [...prev, joinedGrp]);
+      }
       setActiveVoiceSession({ group: channel.group, channel });
       setEnteredFromPublicChannels(true);
       setActiveGroupId(channel.group.id);
@@ -559,18 +609,6 @@ export default function CozyApp() {
   };
 
 
-  const HOME_SEARCH_DATA = [
-    { type: 'game', name: 'Uncharted 4', desc: 'Game' },
-    { type: 'game', name: 'Dishonored', desc: 'Game' },
-    { type: 'game', name: 'Elden Ring', desc: 'Game' },
-    { type: 'activity', name: 'Photobooth', desc: 'Activity' },
-    { type: 'activity', name: 'Watch Together', desc: 'Activity' },
-    { type: 'activity', name: 'Listening Together', desc: 'Activity' },
-    { type: 'contact', name: 'Luna', desc: 'Friend' },
-    { type: 'contact', name: 'Jasper', desc: 'Friend' },
-    { type: 'contact', name: 'Mimi', desc: 'Friend' },
-  ];
-
   const [friendsList, setFriendsList] = useState([
     { name: 'Aneka', seed: 'Aneka', color: 'A577FF', status: 'bg-red-500', label: 'In Game', gameName: 'Uncharted 4' },
     { name: 'Jasper', seed: 'Jasper', color: 'F9EBD8', status: 'bg-green-500', label: 'Online' },
@@ -580,25 +618,271 @@ export default function CozyApp() {
     { name: 'Luna', seed: 'Luna', color: 'F9EBD8', status: 'bg-red-500', label: 'In Game', gameName: 'Elden Ring' },
   ]);
 
+  const HOME_SEARCH_DATA = React.useMemo(() => [
+    { type: 'game', name: 'Uncharted 4', desc: 'Game' },
+    { type: 'game', name: 'Dishonored', desc: 'Game' },
+    { type: 'game', name: 'Elden Ring', desc: 'Game' },
+    { type: 'activity', name: 'Photobooth', desc: 'Activity' },
+    { type: 'activity', name: 'Watch Together', desc: 'Activity' },
+    { type: 'activity', name: 'Listening Together', desc: 'Activity' },
+    ...friendsList.map(f => ({
+      type: 'contact',
+      name: f.name,
+      desc: f.label || (f.isRealFriend ? 'Real Friend' : 'Friend')
+    }))
+  ], [friendsList]);
+
+  const [pendingFriendRequestsCount, setPendingFriendRequestsCount] = useState(0);
+
+  const [hoveredSidebarTooltip, setHoveredSidebarTooltip] = useState<{
+    text: string;
+    top: number;
+    right: number;
+  } | null>(null);
+
+  const showSidebarTooltip = (text: string, e: React.MouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHoveredSidebarTooltip({
+      text,
+      top: rect.top + rect.height / 2,
+      right: window.innerWidth - rect.left + 12
+    });
+  };
+
+  const hideSidebarTooltip = () => {
+    setHoveredSidebarTooltip(null);
+  };
+
+  // Poll real friends & pending friend requests from Supabase PostgreSQL
+  const refreshFriendsData = () => {
+    if (!session?.user?.email) return;
+    fetch('/api/friends')
+      .then(res => res.json())
+      .then(res => {
+        if (res.success) {
+          if (Array.isArray(res.friends)) {
+            setFriendsList(prev => {
+              const dbFriends = res.friends;
+              // Keep non-real mockup friends that don't clash with real friends
+              const dummyFriends = prev.filter(f => !(f as any).isRealFriend && !dbFriends.some((df: any) => df.name.toLowerCase() === f.name.toLowerCase()));
+              return [...dbFriends, ...dummyFriends];
+            });
+          }
+          if (Array.isArray(res.pendingRequests)) {
+            setPendingFriendRequestsCount(res.pendingRequests.length);
+          }
+        }
+      })
+      .catch(err => console.error("Error refreshing friends:", err));
+  };
+
+  React.useEffect(() => {
+    if (!session?.user?.email) return;
+    refreshFriendsData();
+    const interval = setInterval(refreshFriendsData, 4000);
+    return () => clearInterval(interval);
+  }, [session?.user?.email]);
+
   const [notifications, setNotifications] = useState([
-    { id: 1, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Elden Ring', text: 'invited you to play', time: '15m ago', read: false },
-    { id: 2, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '1h ago', read: false },
-    { id: 3, type: 'game_invite', name: 'Oscar', seed: 'Oscar', game: 'Dishonored', text: 'invited you to play', time: '2h ago', read: false },
-    { id: 4, type: 'game_invite', name: 'Aneka', seed: 'Aneka', game: 'Uncharted 4', text: 'invited you to play', time: '3h ago', read: false },
-    { id: 5, type: 'photobooth', name: 'Mimi', seed: 'Mimi', activity: 'Photobooth', text: 'created a new', time: '5h ago', read: true },
-    { id: 6, type: 'activity', name: 'Felix', seed: 'Felix', activity: 'Listening Together', text: 'started a', time: '7h ago', read: true },
-    { id: 7, type: 'photobooth', name: 'Oscar', seed: 'Oscar', activity: 'Photobooth', text: 'created a new', time: 'Yesterday', read: true },
-    { id: 8, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Persona 5', text: 'invited you to play', time: 'Yesterday', read: true },
-    { id: 9, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '2 days ago', read: true },
-    { id: 10, type: 'photobooth', name: 'Aneka', seed: 'Aneka', activity: 'Photobooth', text: 'created a new', time: '3 days ago', read: true },
+    { id: 1, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Elden Ring', text: 'invited you to play', time: '15m ago', read: false, status: 'active' },
+    { id: 11, type: 'channel_invite', name: 'Mimi', seed: 'Mimi', channel: 'Lobby', channelId: 'vc-1', groupId: 'grp-1', text: 'invited you to voice room', time: '10m ago', read: false, status: 'active' },
+    { id: 12, type: 'group_invite', name: 'Felix', seed: 'Felix', groupName: 'Cozy Hangout', groupId: 'grp-1', text: 'invited you to join group', time: '20m ago', read: false, status: 'active' },
+    { id: 2, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '1h ago', read: false, status: 'expired' },
+    { id: 3, type: 'game_invite', name: 'Oscar', seed: 'Oscar', game: 'Dishonored', text: 'invited you to play', time: '2h ago', read: false, status: 'expired' },
+    { id: 4, type: 'game_invite', name: 'Aneka', seed: 'Aneka', game: 'Uncharted 4', text: 'invited you to play', time: '3h ago', read: false, status: 'active' },
+    { id: 5, type: 'photobooth', name: 'Mimi', seed: 'Mimi', activity: 'Photobooth', text: 'created a new', time: '5h ago', read: true, status: 'expired' },
+    { id: 6, type: 'activity', name: 'Felix', seed: 'Felix', activity: 'Listening Together', text: 'started a', time: '7h ago', read: true, status: 'expired' },
+    { id: 7, type: 'photobooth', name: 'Oscar', seed: 'Oscar', activity: 'Photobooth', text: 'created a new', time: 'Yesterday', read: true, status: 'expired' },
+    { id: 8, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Persona 5', text: 'invited you to play', time: 'Yesterday', read: true, status: 'expired' },
+    { id: 9, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '2 days ago', read: true, status: 'expired' },
+    { id: 10, type: 'photobooth', name: 'Aneka', seed: 'Aneka', activity: 'Photobooth', text: 'created a new', time: '3 days ago', read: true, status: 'expired' },
   ]);
+
+  const [activeListeningFriend, setActiveListeningFriend] = useState<any>(null);
+  const [activeWatchFriend, setActiveWatchFriend] = useState<any>(null);
+  const [toastNotification, setToastNotification] = useState<string | null>(null);
+
+  // Poll invitations from Supabase PostgreSQL
+  const refreshInvitations = () => {
+    if (!session?.user?.email) return;
+    fetch('/api/invitations')
+      .then(res => res.json())
+      .then(res => {
+        if (res.success && Array.isArray(res.invitations)) {
+          setNotifications(prev => {
+            const newRealInvites = res.invitations.map((inv: any) => ({
+              id: inv.id,
+              type: inv.type,
+              name: inv.name,
+              seed: inv.seed,
+              avatar: inv.avatar,
+              game: inv.game,
+              activity: inv.activity,
+              channel: inv.channel,
+              channelId: inv.channelId,
+              groupId: inv.groupId,
+              groupName: inv.groupName,
+              text: inv.type === 'game_invite' 
+                ? 'invited you to play' 
+                : (inv.type === 'channel_invite' 
+                  ? 'invited you to voice room' 
+                  : (inv.type === 'group_invite' 
+                    ? 'invited you to join group' 
+                    : (inv.type === 'activity' 
+                      ? (inv.activity === 'Listening Together' ? 'invited you to listen together' : 'invited you to watch together')
+                      : 'invited you to'))),
+              time: inv.time || 'Just now',
+              read: inv.read || false,
+              status: inv.status,
+              isRealInvite: true
+            }));
+
+            // Keep base notifications and merge real invitations
+            const nonReal = prev.filter(p => !(p as any).isRealInvite);
+            return [...newRealInvites, ...nonReal];
+          });
+        }
+      })
+      .catch(err => console.error("Error fetching invitations:", err));
+  };
+
+  React.useEffect(() => {
+    if (!session?.user?.email) return;
+    refreshInvitations();
+    const interval = setInterval(refreshInvitations, 5000);
+    return () => clearInterval(interval);
+  }, [session?.user?.email]);
+
+  // Determine whether an invitation is actively joinable or expired
+  const checkInviteStatus = (n: any) => {
+    if (n.status === 'expired') {
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    const friend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+
+    // 1. Game Invite: Friend must still be in game with matching game
+    if (n.type === 'game_invite') {
+      const isInGame = friend?.label === 'In Game' || friend?.status === 'bg-red-500';
+      const isSameGame = !n.game || (friend?.gameName?.toLowerCase() === n.game.toLowerCase());
+      if (isInGame && isSameGame) {
+        return { isLive: true, buttonText: 'Join Game' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // 2. Channel/Voice Room Invite: Friend must be In Channel or invite is actively open
+    if (n.type === 'channel_invite') {
+      const isInChannel = friend?.status === 'bg-yellow-500' || friend?.label === 'In Channel';
+      if (isInChannel || n.status === 'active') {
+        return { isLive: true, buttonText: 'Join Room' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // 3. Group Invite: Group exists and active
+    if (n.type === 'group_invite') {
+      const groupExists = !n.groupId || groups.some(g => g.id === n.groupId || g.name.toLowerCase() === (n.groupName || '').toLowerCase());
+      if (groupExists && n.status === 'active') {
+        return { isLive: true, buttonText: 'Join Group' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // 4. Activity (Watch Together or Listening Together)
+    if (n.type === 'activity') {
+      const isOld = n.time && (n.time.includes('h') || n.time.includes('day'));
+      const isExplicitlyActive = n.status === 'active' && !isOld;
+
+      if (n.activity === 'Watch Together') {
+        if (isExplicitlyActive) {
+          return { isLive: true, buttonText: 'Join Activity' };
+        }
+        return { isLive: false, buttonText: 'Expired' };
+      }
+
+      if (n.activity === 'Listening Together') {
+        if (isExplicitlyActive) {
+          return { isLive: true, buttonText: 'Join Activity' };
+        }
+        return { isLive: false, buttonText: 'Expired' };
+      }
+    }
+
+    // 5. Photobooth
+    if (n.type === 'photobooth') {
+      const isLive = n.status === 'active' && (!n.time || n.time.includes('m') || n.time === 'Just now');
+      if (isLive) {
+        return { isLive: true, buttonText: 'Join Photobooth' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    return { isLive: false, buttonText: 'Expired' };
+  };
+
+  const handleJoinInvite = (n: any) => {
+    const status = checkInviteStatus(n);
+    if (!status.isLive) {
+      setToastNotification(`This invitation has expired because ${n.name} is no longer in this session.`);
+      setTimeout(() => setToastNotification(null), 3500);
+      markNotificationAsRead(n.id);
+      return;
+    }
+
+    markNotificationAsRead(n.id);
+    setIsNotifOpen(false);
+
+    if (n.type === 'game_invite') {
+      setToastNotification(`Connecting to ${n.name}'s ${n.game || 'Game'} session...`);
+      setTimeout(() => setToastNotification(null), 3000);
+      const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+      if (foundFriend) setSelectedFriend(foundFriend);
+    } else if (n.type === 'channel_invite') {
+      const grp = groups.find(g => g.id === n.groupId) || groups[0];
+      const targetChannel = grp?.channels.find(c => c.id === n.channelId || c.name.toLowerCase() === (n.channel || n.targetName)?.toLowerCase()) 
+        || publicChannels.find(c => c.id === n.channelId || c.name.toLowerCase() === (n.channel || n.targetName)?.toLowerCase());
+      
+      if (grp && targetChannel) {
+        setActiveVoiceSession({ group: grp, channel: targetChannel });
+        setEnteredFromPublicChannels(false);
+        setActiveGroupId(grp.id);
+        setTargetChannelId(targetChannel.id);
+        setActiveTab('group');
+        setIsPublicChannelsView(false);
+      } else if (targetChannel) {
+        handleJoinPublicChannel(targetChannel);
+      } else {
+        if (n.groupId) setActiveGroupId(n.groupId);
+        setActiveTab('group');
+      }
+    } else if (n.type === 'group_invite') {
+      const targetGrp = groups.find(g => g.id === n.groupId || g.name.toLowerCase() === (n.groupName || n.targetName)?.toLowerCase());
+      if (targetGrp) {
+        setActiveGroupId(targetGrp.id);
+      }
+      setEnteredFromPublicChannels(false);
+      setActiveTab('group');
+      setIsPublicChannelsView(false);
+    } else if (n.activity === 'Watch Together') {
+      const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+      setActiveWatchFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
+      setIsWatchTogetherOpen(true);
+    } else if (n.activity === 'Listening Together') {
+      const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+      setActiveListeningFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
+      setActiveTab('music');
+    } else if (n.type === 'photobooth') {
+      setActiveTab('photobooth');
+    }
+  };
 
   const unreadNotifsCount = notifications.filter(n => !n.read).length;
 
   const [targetChatName, setTargetChatName] = useState<string | undefined>();
   const [triggerCall, setTriggerCall] = useState<'audio' | 'video' | false>(false);
 
-  const markNotificationAsRead = (id: number) => {
+  const markNotificationAsRead = (id: any) => {
     setNotifications(prev => {
       const updated = prev.map(x => x.id === id ? { ...x, read: true } : x);
       syncUserData({ notifications: updated });
@@ -620,15 +904,35 @@ export default function CozyApp() {
 
   const handleAcceptFriendRequest = (friend: any) => {
     setFriendsList(prev => {
-      const updated = [...prev, { name: friend.name, seed: friend.seed, color: friend.color, status: 'bg-green-500', label: 'Online' }];
+      const exists = prev.some(f => f.name.toLowerCase() === friend.name.toLowerCase());
+      if (exists) return prev;
+      const newFriendItem = {
+        name: friend.name,
+        seed: friend.seed || friend.name,
+        email: friend.email,
+        color: friend.color || 'A577FF',
+        status: 'bg-green-500',
+        label: 'Online',
+        avatar: friend.avatar,
+        isRealFriend: true
+      };
+      const updated = [newFriendItem, ...prev];
       syncUserData({ friendsList: updated });
       return updated;
     });
+    refreshFriendsData();
   };
 
   const handleUnfriend = (friend: any) => {
+    if (friend.isRealFriend || friend.email) {
+      fetch('/api/friends', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetEmail: friend.email, targetName: friend.name })
+      }).catch(err => console.error("Unfriend error:", err));
+    }
     setFriendsList(prev => {
-      const updated = prev.filter(f => f.name !== friend.name);
+      const updated = prev.filter(f => f.name.toLowerCase() !== friend.name.toLowerCase());
       syncUserData({ friendsList: updated });
       return updated;
     });
@@ -686,11 +990,6 @@ export default function CozyApp() {
                 {globalUnreadCount > 0 && (
                   <span className="absolute top-1 right-1 bg-[#A577FF] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full border-2 border-[#150A35]">{globalUnreadCount}</span>
                 )}
-              </div>
-              <div onClick={() => { setActiveTab('photobooth'); setIsStatisticView(false); }} className={`relative group cursor-pointer flex flex-col items-center transition-all ${activeTab === 'photobooth' ? 'text-white' : 'text-gray-500 hover:text-white'}`} title="Photobooth">
-                <div className={`p-3 rounded-xl transition-all ${activeTab === 'photobooth' ? 'bg-[#A577FF]/20 text-[#A577FF]' : 'hover:bg-white/5'}`}>
-                  <Camera size={22} />
-                </div>
               </div>
             </>
           )}
@@ -914,7 +1213,14 @@ export default function CozyApp() {
                               setIsHomeSearchOpen(false);
                               setHomeSearchQuery('');
                               if (item.type === 'contact') {
-                                requireAuth(() => setActiveTab('chat'), 'Please log in or sign up first to start a conversation.');
+                                requireAuth(() => {
+                                  setTargetChatName(item.name);
+                                  setActiveTab('chat');
+                                }, 'Please log in or sign up first to start a conversation.');
+                              } else if (item.type === 'activity') {
+                                if (item.name === 'Photobooth') setActiveTab('photobooth');
+                                if (item.name === 'Watch Together') setIsWatchTogetherOpen(true);
+                                if (item.name === 'Listening Together') setActiveTab('music');
                               }
                             }}
                             className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
@@ -966,37 +1272,52 @@ export default function CozyApp() {
                       </div>
                       <div className="max-h-[360px] overflow-y-auto custom-scrollbar overscroll-contain pr-1">
                         {notifications.length === 0 && <div className="p-4 text-center text-xs text-gray-400">No new notifications</div>}
-                        {notifications.map((n) => (
-                          <div 
-                            key={n.id} 
-                            onClick={() => markNotificationAsRead(n.id)}
-                            className={`p-4 border-b border-white/5 transition-colors relative cursor-pointer ${
-                              n.read ? 'bg-transparent hover:bg-white/5' : 'bg-white/10 hover:bg-white/15'
-                            }`}
-                          >
-                            {!n.read && <div className="absolute top-4 right-4 w-2 h-2 bg-[#A577FF] rounded-full shadow-[0_0_8px_rgba(165,119,255,0.8)]"></div>}
-                            <div className="flex items-start gap-3">
-                              <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}`} className="w-9 h-9 rounded-full border border-[#150A35] object-cover bg-[#0D0524]" alt="avatar"/>
-                              <div className="flex-1 min-w-0 pr-4">
-                                <p className="text-xs text-gray-300">
-                                  <span className="font-bold text-white">{n.name}</span> {n.text} 
-                                  {n.game && <span className="font-bold text-[#A577FF]"> {n.game}</span>}
-                                  {n.activity && <span className="font-bold text-[#A577FF]"> {n.activity}</span>}
-                                </p>
-                                <span className="text-[10px] text-gray-500 mt-0.5 block">{n.time}</span>
-                                {n.type === 'game_invite' && (
-                                  <button onClick={(e) => { e.stopPropagation(); markNotificationAsRead(n.id); }} className="w-full mt-2.5 bg-[#A577FF] hover:bg-[#9161eb] text-white text-[10px] font-bold py-1.5 rounded-lg transition-colors shadow-lg cursor-pointer">Join Game</button>
-                                )}
-                                {n.type === 'activity' && (
-                                  <button onClick={(e) => { e.stopPropagation(); markNotificationAsRead(n.id); }} className="w-full mt-2.5 bg-white/5 hover:bg-white/10 text-white text-[10px] font-bold py-1.5 rounded-lg transition-colors border border-white/5 cursor-pointer">Join Activity</button>
-                                )}
-                                {n.type === 'photobooth' && (
-                                  <button onClick={(e) => { e.stopPropagation(); markNotificationAsRead(n.id); }} className="w-full mt-2.5 bg-white/5 hover:bg-white/10 text-white text-[10px] font-bold py-1.5 rounded-lg transition-colors border border-white/5 cursor-pointer">Join Photobooth</button>
-                                )}
+                        {notifications.map((n) => {
+                          const statusInfo = checkInviteStatus(n);
+                          return (
+                            <div 
+                              key={n.id} 
+                              onClick={() => markNotificationAsRead(n.id)}
+                              className={`p-4 border-b border-white/5 transition-colors relative cursor-pointer ${
+                                n.read ? 'bg-transparent hover:bg-white/5' : 'bg-white/10 hover:bg-white/15'
+                              }`}
+                            >
+                              {!n.read && <div className="absolute top-4 right-4 w-2 h-2 bg-[#A577FF] rounded-full shadow-[0_0_8px_rgba(165,119,255,0.8)]"></div>}
+                              <div className="flex items-start gap-3">
+                                <img 
+                                  src={n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF`} 
+                                  className="w-9 h-9 rounded-full border border-[#150A35] object-cover bg-[#0D0524]" 
+                                  alt="avatar"
+                                />
+                                <div className="flex-1 min-w-0 pr-4">
+                                  <p className="text-xs text-gray-300">
+                                    <span className="font-bold text-white">{n.name}</span> {n.text} 
+                                    {n.game && <span className="font-bold text-[#A577FF]"> {n.game}</span>}
+                                    {n.activity && <span className="font-bold text-[#A577FF]"> {n.activity}</span>}
+                                    {n.channel && <span className="font-bold text-[#A577FF]"> #{n.channel}</span>}
+                                    {n.groupName && <span className="font-bold text-[#A577FF]"> {n.groupName}</span>}
+                                  </p>
+
+                                  <span className="text-[10px] text-gray-500 mt-1 block">{n.time}</span>
+
+                                  <button 
+                                    onClick={(e) => { 
+                                      e.stopPropagation(); 
+                                      handleJoinInvite(n); 
+                                    }} 
+                                    className={`w-full mt-2.5 text-[10px] font-bold py-1.5 rounded-lg transition-all shadow-md cursor-pointer flex items-center justify-center gap-1.5 ${
+                                      statusInfo.isLive 
+                                        ? 'bg-[#A577FF] hover:bg-[#9161eb] text-white hover:scale-[1.01]' 
+                                        : 'bg-white/5 hover:bg-white/10 text-gray-400 border border-white/5 opacity-70'
+                                    }`}
+                                  >
+                                    {statusInfo.isLive ? statusInfo.buttonText : 'Expired'}
+                                  </button>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1737,10 +2058,26 @@ export default function CozyApp() {
         )}
         
         {/* VIEW CHAT */}
-        {activeTab === 'chat' && <ChatView onUnreadCountChange={setGlobalUnreadCount} initialActiveChat={targetChatName} initialCallOpen={triggerCall} />}
+        {activeTab === 'chat' && (
+          <ChatView 
+            onUnreadCountChange={setGlobalUnreadCount} 
+            initialActiveChat={targetChatName} 
+            initialCallOpen={triggerCall}
+            friendsList={friendsList}
+            currentUser={userName}
+            userImage={userImage}
+          />
+        )}
 
         {/* VIEW MUSIC */}
-        {activeTab === 'music' && <MusicView userImage={userImage} onGoHome={() => setActiveTab('home')} />}
+        {activeTab === 'music' && (
+          <MusicView 
+            userImage={userImage} 
+            onGoHome={() => setActiveTab('home')} 
+            friendsList={friendsList}
+            initialListeningWith={activeListeningFriend}
+          />
+        )}
 
         {/* VIEW PHOTOBOOTH */}
         {activeTab === 'photobooth' && (
@@ -1844,25 +2181,36 @@ export default function CozyApp() {
         <div className="w-[85px] bg-[#150A35] border border-white/5 rounded-[32px] flex flex-col items-center py-8 z-40 shadow-2xl transition-all h-full shrink-0">
           
           {/* User Profile */}
-          <div onClick={() => setIsProfileModalOpen(true)} className="relative group cursor-pointer mb-6">
+          <div 
+            onClick={() => setIsProfileModalOpen(true)} 
+            className="relative group cursor-pointer mb-6"
+            onMouseEnter={(e) => showSidebarTooltip('Edit Profile', e)}
+            onMouseLeave={hideSidebarTooltip}
+          >
             <div className="w-12 h-12 rounded-full p-0.5 bg-gradient-to-b from-[#A577FF] to-transparent shadow-[0_0_15px_rgba(165,119,255,0.2)]">
               <img src={userImage} alt={userName} className="w-full h-full rounded-full object-cover border-2 border-[#150A35]" />
             </div>
-            <span className="absolute right-14 top-2 bg-[#F5F7FC] text-[#150A35] text-[10px] font-bold px-2.5 py-1.5 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity shadow-[0_4px_14px_rgba(0,0,0,0.8)] whitespace-nowrap pointer-events-none">
-              Edit Profile
-            </span>
           </div>
 
-          <div className="flex-1 w-full overflow-y-auto flex flex-col items-center gap-5 custom-scrollbar py-2 overscroll-contain">
+          <div 
+            className="flex-1 w-full overflow-y-auto flex flex-col items-center gap-5 custom-scrollbar py-2 overscroll-contain"
+            onScroll={hideSidebarTooltip}
+          >
             {/* Online Friends */}
             {friendsList.map((friend, i) => (
               <div 
                 key={i} 
                 className="relative cursor-pointer group hover:-translate-y-1 transition-transform"
-                onClick={() => setSelectedFriend({ ...friend, isAdded: i % 2 === 0 })}
+                onClick={() => setSelectedFriend({ ...friend, isAdded: true })}
+                onMouseEnter={(e) => showSidebarTooltip(friend.name, e)}
+                onMouseLeave={hideSidebarTooltip}
               >
-                <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=${friend.color}`} alt="Friend" className="w-11 h-11 rounded-full border-2 border-transparent group-hover:border-[#A577FF] transition-colors object-cover" />
-                <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#150A35] ${friend.status}`}></div>
+                <img 
+                  src={(friend as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed || friend.name}&backgroundColor=${friend.color || 'A577FF'}`} 
+                  alt={friend.name} 
+                  className="w-11 h-11 rounded-full border-2 border-transparent group-hover:border-[#A577FF] transition-colors object-cover" 
+                />
+                <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[#150A35] ${friend.status || 'bg-green-500'}`}></div>
                 {friend.label === 'In Game' && (
                   <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 bg-red-500/20 text-red-400 text-[8px] font-bold px-1.5 py-0.5 rounded-sm whitespace-nowrap">
                     {friend.label}
@@ -1878,11 +2226,18 @@ export default function CozyApp() {
           </div>
 
           <div className="mt-6 pt-6 border-t border-white/10 flex flex-col items-center gap-6 w-full">
-            <div className="relative group cursor-pointer" onClick={() => setIsAddFriendModalOpen(true)}>
+            <div 
+              className="relative group cursor-pointer" 
+              onClick={() => setIsAddFriendModalOpen(true)}
+              onMouseEnter={(e) => showSidebarTooltip(pendingFriendRequestsCount > 0 ? `Friend Requests (${pendingFriendRequestsCount})` : "Add Friends", e)}
+              onMouseLeave={hideSidebarTooltip}
+            >
               <div className="w-11 h-11 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-gray-400 group-hover:text-white group-hover:bg-white/10 transition-colors">
                 <Users size={18} />
               </div>
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#150A35]"></span>
+              {pendingFriendRequestsCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#150A35] animate-pulse"></span>
+              )}
             </div>
           </div>
         </div>
@@ -1934,10 +2289,38 @@ export default function CozyApp() {
 
       <WatchTogetherModal 
         isOpen={isWatchTogetherOpen}
-        onClose={() => setIsWatchTogetherOpen(false)}
+        onClose={() => {
+          setIsWatchTogetherOpen(false);
+          setActiveWatchFriend(null);
+        }}
         currentUser={{ name: userName, avatar: userImage }}
-        roomMembers={friendsList.map(f => ({ name: f.name, avatar: `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed}&backgroundColor=${f.color}` }))}
+        friendsList={friendsList}
+        initialFriend={activeWatchFriend}
+        roomMembers={friendsList.map(f => ({ name: f.name, avatar: (f as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}` }))}
       />
+
+      {/* Toast Notification for Expired/Active session info */}
+      {toastNotification && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[100] bg-[#251A45] border border-white/15 text-white px-5 py-3 rounded-2xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4">
+          <div className="w-2.5 h-2.5 rounded-full bg-[#A577FF] animate-pulse" />
+          <span className="text-xs font-semibold">{toastNotification}</span>
+        </div>
+      )}
+
+      {/* Floating Tooltip for Right Sidebar Items (Friends, Profile, Add Friends) */}
+      {hoveredSidebarTooltip && (
+        <div 
+          style={{ 
+            top: hoveredSidebarTooltip.top, 
+            right: hoveredSidebarTooltip.right,
+            transform: 'translateY(-50%)'
+          }}
+          className="fixed z-[999] bg-[#F5F7FC] text-[#150A35] text-[11px] font-bold px-3 py-1.5 rounded-xl shadow-[0_8px_30px_rgba(0,0,0,0.6)] whitespace-nowrap pointer-events-none flex items-center animate-in fade-in zoom-in-95 duration-100 select-none border border-white/80"
+        >
+          <span>{hoveredSidebarTooltip.text}</span>
+          <div className="absolute -right-1 top-1/2 -translate-y-1/2 w-2 h-2 bg-[#F5F7FC] rotate-45 border-r border-t border-white/80" />
+        </div>
+      )}
     </div>
   );
 }

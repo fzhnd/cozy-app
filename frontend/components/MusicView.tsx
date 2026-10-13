@@ -11,9 +11,11 @@ import {
 interface MusicViewProps {
   userImage: string;
   onGoHome?: () => void;
+  friendsList?: any[];
+  initialListeningWith?: any;
 }
 
-export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
+export default function MusicView({ userImage, onGoHome, friendsList = [], initialListeningWith }: MusicViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -149,13 +151,34 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
   }, [middleView]);
 
   const [activeFriend, setActiveFriend] = useState<any>(null);
+
+  // Auto-connect if initialListeningWith is provided from notification
+  useEffect(() => {
+    if (initialListeningWith) {
+      setActiveFriend(initialListeningWith);
+      setFriendState('joined');
+      setToastMessage(`Connected: Listening together with ${initialListeningWith.name}`);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
+  }, [initialListeningWith]);
   
   const handleAddFriendClick = (friend: any) => {
     setActiveFriend(friend);
     setFriendState('waiting');
+
+    // Send persistent invitation to Supabase PostgreSQL
+    fetch('/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        receiverName: friend.name,
+        type: 'activity',
+        targetName: 'Listening Together'
+      })
+    }).catch(err => console.error("Error sending listening invite:", err));
   };
 
-  // Simulate friend joining
+  // Simulate friend joining for demo friends if waiting
   useEffect(() => {
     if (friendState === 'waiting') {
       const t = setTimeout(() => {
@@ -1169,7 +1192,16 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
           <div className="p-6 flex items-center justify-between border-b border-white/5 relative h-[89px]">
             {friendState === 'joined' ? (
               <button 
-                onClick={() => { setFriendState('none'); if (onGoHome) onGoHome(); }}
+                onClick={() => { 
+                  setFriendState('none'); 
+                  setActiveFriend(null);
+                  fetch('/api/invitations', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: 'activity', status: 'expired' })
+                  }).catch(e => {});
+                  if (onGoHome) onGoHome(); 
+                }}
                 className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
                 title="Leave Listening Session"
               >
@@ -1195,20 +1227,23 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
                 <div className="absolute top-16 right-16 w-64 bg-[#251A45] rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.8)] border border-white/10 z-50 p-2 animate-in fade-in slide-in-from-top-2">
                   <div className="text-xs font-bold text-gray-400 mb-2 px-2 pt-1">List Friends</div>
                   <div className="max-h-[210px] overflow-y-auto custom-scrollbar pr-1">
-                    {MOCK_FRIENDS.map((friend, i) => (
-                      <div key={i} className="flex items-center justify-between p-2 hover:bg-white/5 rounded-lg cursor-pointer group">
-                        <div className="flex items-center gap-3">
-                          <img src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=${friend.color}`} className="w-8 h-8 rounded-full border border-white/10 object-cover" alt={friend.name} />
-                          <span className="text-sm font-bold text-gray-200 group-hover:text-white truncate max-w-[90px]">{friend.name}</span>
+                    {(friendsList && friendsList.length > 0 ? friendsList : MOCK_FRIENDS).map((friend: any, i: number) => {
+                      const avatarSrc = friend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed || friend.name}&backgroundColor=${friend.color || 'A577FF'}`;
+                      return (
+                        <div key={i} className="flex items-center justify-between p-2 hover:bg-white/5 rounded-lg cursor-pointer group">
+                          <div className="flex items-center gap-3">
+                            <img src={avatarSrc} className="w-8 h-8 rounded-full border border-white/10 object-cover" alt={friend.name} />
+                            <span className="text-sm font-bold text-gray-200 group-hover:text-white truncate max-w-[90px]">{friend.name}</span>
+                          </div>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); handleAddFriendClick({ ...friend, avatar: avatarSrc }); }}
+                            className="text-[10px] bg-[#A577FF] hover:bg-[#9161eb] text-white px-3 py-1.5 rounded-full font-bold transition-colors shrink-0"
+                          >
+                            Add
+                          </button>
                         </div>
-                        <button 
-                          onClick={(e) => { e.stopPropagation(); handleAddFriendClick(friend); }}
-                          className="text-[10px] bg-[#A577FF] hover:bg-[#9161eb] text-white px-3 py-1.5 rounded-full font-bold transition-colors shrink-0"
-                        >
-                          Add
-                        </button>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </>
@@ -1217,7 +1252,7 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
             <div className="flex items-center -space-x-3">
               {(friendState === 'waiting' || friendState === 'joined') && activeFriend && (
                 <img 
-                  src={`https://api.dicebear.com/7.x/adventurer/svg?seed=${activeFriend.seed}&backgroundColor=${activeFriend.color}`} 
+                  src={activeFriend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeFriend.seed || activeFriend.name}&backgroundColor=${activeFriend.color || 'A577FF'}`} 
                   className={`w-10 h-10 rounded-full border-2 border-[#150A35] relative z-0 transition-opacity ${friendState === 'waiting' ? 'animate-pulse opacity-60' : 'opacity-100'}`} 
                   alt={activeFriend.name} 
                 />

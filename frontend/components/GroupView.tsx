@@ -488,7 +488,20 @@ export default function GroupView({
 
   const handleInviteFriend = (friendName: string) => {
     setInvitedFriends(prev => [...prev, friendName]);
-    showToast(activeChannel ? `Invitation to channel #${activeChannel.name} sent to ${friendName}!` : `Invitation sent to ${friendName}!`);
+    showToast(activeChannel ? `Invitation to channel #${activeChannel.name} sent to ${friendName}!` : `Invitation to group ${group.name} sent to ${friendName}!`);
+
+    // Send persistent invitation to Supabase PostgreSQL
+    fetch('/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        receiverName: friendName,
+        type: activeChannel ? 'channel_invite' : 'group_invite',
+        targetName: activeChannel ? activeChannel.name : (group.name || 'Group'),
+        channelId: activeChannel?.id,
+        groupId: group.id
+      })
+    }).catch(err => console.error("Error sending invitation:", err));
   };
 
   // Full Emoji Set for Emoticon Picker
