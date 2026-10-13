@@ -23,26 +23,41 @@ export const authOptions: AuthOptions = {
           throw new Error("Email and password are required");
         }
 
-        const user = await prisma.user.findUnique({
-          where: { email: credentials.email }
-        });
+        try {
+          const user = await prisma.user.findUnique({
+            where: { email: credentials.email }
+          });
 
-        if (!user || !user.password) {
-          throw new Error("Email not found or registered via Google");
+          if (!user || !user.password) {
+            throw new Error("Email not found or registered via Google");
+          }
+
+          const isPasswordValid = await bcrypt.compare(credentials.password, user.password);
+
+          if (!isPasswordValid) {
+            throw new Error("Incorrect password. Please try again or use Reset Password.");
+          }
+
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            image: user.image,
+          };
+        } catch (err: any) {
+          if (
+            err.message === "Email not found or registered via Google" || 
+            err.message.startsWith("Incorrect password") || 
+            err.message === "Invalid password"
+          ) {
+            throw err;
+          }
+          console.error("Database auth error:", err);
+          if (err?.message?.includes("DATABASE_URL")) {
+            throw new Error("Database configuration error (DATABASE_URL not found). Please set DATABASE_URL in Vercel.");
+          }
+          throw new Error("Database connection error. Please try again later.");
         }
-
-        const isPasswordValid = await bcrypt.compare(credentials.password, user.password);
-
-        if (!isPasswordValid) {
-          throw new Error("Invalid password");
-        }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          image: user.image,
-        };
       }
     }),
   ],
