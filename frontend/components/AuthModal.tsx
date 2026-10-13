@@ -1,17 +1,19 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
+import { X, Sparkles } from 'lucide-react';
 import { signIn } from 'next-auth/react';
 
 export default function AuthModal({ 
   isOpen, 
   initialMode = 'login',
+  promptMessage,
   onClose, 
   onLoginSuccess 
 }: { 
   isOpen: boolean; 
   initialMode?: 'login' | 'signup';
+  promptMessage?: string | null;
   onClose: () => void;
   onLoginSuccess: () => void;
 }) {
@@ -93,8 +95,8 @@ export default function AuthModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm transition-all p-4">
-      <div className="bg-[#150A35] border border-white/10 p-8 sm:p-9 rounded-[36px] shadow-[0_0_40px_rgba(0,0,0,0.8)] w-full max-w-[440px] relative">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md transition-all p-4 animate-in fade-in duration-200">
+      <div className="bg-[#150A35] border border-white/10 p-8 sm:p-9 rounded-[36px] shadow-[0_0_50px_rgba(0,0,0,0.9),0_0_30px_rgba(165,119,255,0.15)] w-full max-w-[440px] relative">
         {/* Close Button */}
         <button 
           onClick={onClose} 
@@ -103,13 +105,21 @@ export default function AuthModal({
           <X size={22} />
         </button>
         
+        {/* Prompt Message Banner (Ketika fitur diklik sebelum login) */}
+        {promptMessage && (
+          <div className="mb-4 px-3.5 py-2.5 rounded-2xl bg-[#A577FF]/15 border border-[#A577FF]/30 text-[#D8C2FF] text-xs font-semibold flex items-center gap-2.5 animate-in fade-in slide-in-from-top-1">
+            <Sparkles size={16} className="text-[#A577FF] shrink-0" />
+            <span>{promptMessage}</span>
+          </div>
+        )}
+
         {/* Title & Subtitle */}
         <h3 className="text-2xl sm:text-3xl font-bold text-[#F5F7FC] mb-1.5">
           {isLoginMode ? 'Welcome Back' : 'Create Account'}
         </h3>
         <p className="text-gray-400 text-sm mb-6">
           {isLoginMode 
-            ? 'Please sign in to your account.' 
+            ? 'Please log in or sign up to continue.' 
             : 'Sign up to access and enjoy all features.'}
         </p>
 

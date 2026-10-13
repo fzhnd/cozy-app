@@ -167,6 +167,16 @@ export default function CozyApp() {
 
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup' | null>(null);
+  const [authPromptMessage, setAuthPromptMessage] = useState<string | null>(null);
+
+  const requireAuth = (action: () => void, promptMsg?: string) => {
+    if (!isLoggedIn) {
+      setAuthPromptMessage(promptMsg || 'Please log in or sign up first to access this feature.');
+      setAuthModalMode('login');
+      return;
+    }
+    action();
+  };
 
   const [isAddFriendModalOpen, setIsAddFriendModalOpen] = useState(false);
   const [selectedFriend, setSelectedFriend] = useState<any>(null);
@@ -900,7 +910,9 @@ export default function CozyApp() {
                             onClick={() => {
                               setIsHomeSearchOpen(false);
                               setHomeSearchQuery('');
-                              if (item.type === 'contact') setActiveTab('chat');
+                              if (item.type === 'contact') {
+                                requireAuth(() => setActiveTab('chat'), 'Please log in or sign up first to start a conversation.');
+                              }
                             }}
                             className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
                           >
@@ -1130,7 +1142,10 @@ export default function CozyApp() {
             <div className="grid grid-cols-3 gap-6 h-[180px] shrink-0">
               
               {/* Hero Banner */}
-              <div className="col-span-2 bg-gradient-to-br from-[#A577FF] to-[#7065D4] rounded-[32px] p-6 relative overflow-hidden group shadow-lg flex flex-col justify-between min-w-0">
+              <div 
+                onClick={() => requireAuth(() => setIsPublicChannelsView(true), 'Please log in or sign up first to join Cozy Lounge.')}
+                className="col-span-2 bg-gradient-to-br from-[#A577FF] to-[#7065D4] rounded-[32px] p-6 relative overflow-hidden group shadow-lg flex flex-col justify-between min-w-0 cursor-pointer"
+              >
                 <div className="absolute -right-10 -top-10 w-64 h-64 bg-white/20 blur-3xl rounded-full group-hover:scale-110 transition-transform duration-700"></div>
                 <div className="absolute -left-10 -bottom-10 w-48 h-48 bg-[#150A35]/30 blur-2xl rounded-full"></div>
                 <div className="absolute right-0 bottom-0 w-2/3 h-full bg-[url('https://api.dicebear.com/7.x/shapes/svg?seed=cozy&backgroundColor=transparent')] bg-no-repeat bg-right-bottom opacity-50 mix-blend-overlay group-hover:scale-105 transition-transform duration-500"></div>
@@ -1152,7 +1167,10 @@ export default function CozyApp() {
                       ))}
                     </div>
                     <button 
-                      onClick={() => setIsPublicChannelsView(true)} 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        requireAuth(() => setIsPublicChannelsView(true), 'Please log in or sign up first to join Voice Channels.');
+                      }} 
                       className="bg-white text-[#150A35] hover:bg-[#F0EEFF] font-bold text-xs px-4 py-2 rounded-full transition-all shadow-lg hover:shadow-xl flex items-center gap-2 cursor-pointer hover:scale-105 active:scale-95 group/btn"
                     >
                       <Volume2 size={15} className="text-[#A577FF] group-hover/btn:scale-110 transition-transform" />
@@ -1172,9 +1190,15 @@ export default function CozyApp() {
                   <div 
                     key={i} 
                     onClick={() => {
-                      if (game.name === 'Listening Together') setActiveTab('music');
-                      if (game.name === 'Watch Together') setIsWatchTogetherOpen(true);
-                      if (game.name === 'Photobooth') setActiveTab('photobooth');
+                      if (game.name === 'Listening Together') {
+                        requireAuth(() => setActiveTab('music'), 'Please log in or sign up first to enjoy Listening Together.');
+                      }
+                      if (game.name === 'Watch Together') {
+                        requireAuth(() => setIsWatchTogetherOpen(true), 'Please log in or sign up first to watch YouTube together in Watch Together.');
+                      }
+                      if (game.name === 'Photobooth') {
+                        requireAuth(() => setActiveTab('photobooth'), 'Please log in or sign up first to use Photobooth.');
+                      }
                     }}
                     className="bg-white/5 hover:bg-white/10 border border-white/5 p-2 px-3 rounded-[24px] flex items-center gap-3 cursor-pointer transition-all group flex-1 min-h-0"
                   >
@@ -1226,7 +1250,11 @@ export default function CozyApp() {
                         { name: 'God of War', seed: 'war', colors: 'from-blue-900 to-indigo-800' },
                         { name: 'Persona 5', seed: 'city', colors: 'from-red-600 to-red-800' },
                       ].map((game, i) => (
-                        <div key={i} className="min-w-[calc(33.333%-11px)] max-w-[calc(33.333%-11px)] bg-white/5 border border-white/5 rounded-[24px] p-4 group cursor-pointer hover:bg-white/10 transition-all relative overflow-hidden flex flex-col justify-between min-h-0">
+                        <div 
+                          key={i} 
+                          onClick={() => requireAuth(() => {}, `Please log in or sign up first to play ${game.name}.`)}
+                          className="min-w-[calc(33.333%-11px)] max-w-[calc(33.333%-11px)] bg-white/5 border border-white/5 rounded-[24px] p-4 group cursor-pointer hover:bg-white/10 transition-all relative overflow-hidden flex flex-col justify-between min-h-0"
+                        >
                           <div className="absolute top-6 left-6 bg-white/20 backdrop-blur-md p-2 rounded-full opacity-0 group-hover:opacity-100 group-hover:scale-110 transition-all shadow-lg z-10">
                             <PlayCircle size={16} fill="white" className="text-white/20" />
                           </div>
@@ -1245,14 +1273,19 @@ export default function CozyApp() {
 
                 {/* Listening Activity (Home Mini Player) */}
                 <div 
-                  className="h-[80px] shrink-0 bg-gradient-to-r from-white/5 to-transparent rounded-[24px] px-6 flex items-center justify-between border border-white/5 shadow-md transition-colors select-none"
+                  onClick={() => {
+                    if (!isLoggedIn) {
+                      requireAuth(() => {}, 'Please log in or sign up first to play music on Cozy.');
+                    }
+                  }}
+                  className="h-[80px] shrink-0 bg-gradient-to-r from-white/5 to-transparent rounded-[24px] px-6 flex items-center justify-between border border-white/5 shadow-md transition-colors select-none cursor-pointer"
                 >
                   {/* Left: Album art & Info */}
                   <div className="flex items-center gap-4 w-auto">
                     <div 
                       onClick={(e) => {
                         e.stopPropagation();
-                        setActiveTab('music');
+                        requireAuth(() => setActiveTab('music'), 'Please log in or sign up first to open the music player.');
                       }} 
                       className="relative w-12 h-12 shrink-0 cursor-pointer group/art"
                       title="Click to open Music View"
@@ -1270,7 +1303,7 @@ export default function CozyApp() {
                       <h4 
                         onClick={(e) => {
                           e.stopPropagation();
-                          setActiveTab('music');
+                          requireAuth(() => setActiveTab('music'), 'Please log in or sign up first to open the music player.');
                         }}
                         className="text-[#F5F7FC] font-bold text-sm cursor-pointer hover:text-[#A577FF] transition-colors"
                         title="Open music view"
@@ -1290,7 +1323,7 @@ export default function CozyApp() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setIsMiniPlayerShuffle(!isMiniPlayerShuffle);
+                        requireAuth(() => setIsMiniPlayerShuffle(!isMiniPlayerShuffle), 'Please log in or sign up first to play music.');
                       }}
                       className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
                         isMiniPlayerShuffle 
@@ -1307,12 +1340,14 @@ export default function CozyApp() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (miniPlayerCurrentTime > 3) {
-                          setMiniPlayerCurrentTime(0);
-                        } else {
-                          setMiniPlayerTrackIndex((miniPlayerTrackIndex - 1 + HOME_TRACKS.length) % HOME_TRACKS.length);
-                          setMiniPlayerCurrentTime(0);
-                        }
+                        requireAuth(() => {
+                          if (miniPlayerCurrentTime > 3) {
+                            setMiniPlayerCurrentTime(0);
+                          } else {
+                            setMiniPlayerTrackIndex((miniPlayerTrackIndex - 1 + HOME_TRACKS.length) % HOME_TRACKS.length);
+                            setMiniPlayerCurrentTime(0);
+                          }
+                        }, 'Please log in or sign up first to play music.');
                       }}
                       className="text-gray-400 hover:text-white transition-colors cursor-pointer p-1 rounded-lg active:scale-90"
                       title="Previous Song"
@@ -1325,7 +1360,7 @@ export default function CozyApp() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setIsMiniPlayerPlaying(!isMiniPlayerPlaying);
+                        requireAuth(() => setIsMiniPlayerPlaying(!isMiniPlayerPlaying), 'Please log in or sign up first to play music.');
                       }}
                       className="w-10 h-10 bg-[#A577FF] rounded-full flex items-center justify-center cursor-pointer hover:scale-105 hover:bg-[#9161eb] active:scale-95 transition-all shadow-[0_0_15px_rgba(165,119,255,0.4)] text-white"
                       title={isMiniPlayerPlaying ? 'Pause' : 'Play'}
@@ -1342,13 +1377,15 @@ export default function CozyApp() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (isMiniPlayerShuffle) {
-                          const nextIdx = Math.floor(Math.random() * HOME_TRACKS.length);
-                          setMiniPlayerTrackIndex(nextIdx);
-                        } else {
-                          setMiniPlayerTrackIndex((miniPlayerTrackIndex + 1) % HOME_TRACKS.length);
-                        }
-                        setMiniPlayerCurrentTime(0);
+                        requireAuth(() => {
+                          if (isMiniPlayerShuffle) {
+                            const nextIdx = Math.floor(Math.random() * HOME_TRACKS.length);
+                            setMiniPlayerTrackIndex(nextIdx);
+                          } else {
+                            setMiniPlayerTrackIndex((miniPlayerTrackIndex + 1) % HOME_TRACKS.length);
+                          }
+                          setMiniPlayerCurrentTime(0);
+                        }, 'Please log in or sign up first to play music.');
                       }}
                       className="text-gray-400 hover:text-white transition-colors cursor-pointer p-1 rounded-lg active:scale-90"
                       title="Next Song"
@@ -1361,15 +1398,17 @@ export default function CozyApp() {
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setMiniPlayerRepeatState(prev => {
-                          if (prev === 'none') return 'all';
-                          if (prev === 'all') return 'one';
-                          return 'none';
-                        });
+                        requireAuth(() => {
+                          setMiniPlayerRepeatState(prev => {
+                            if (prev === 'none') return 'all';
+                            if (prev === 'all') return 'one';
+                            return 'none';
+                          });
+                        }, 'Please log in or sign up first to play music.');
                       }}
                       className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all cursor-pointer ${
                         miniPlayerRepeatState !== 'none'
-                          ? 'bg-[#A577FF]/20 text-[#A577FF] border border-[#A577FF]/30 shadow-[0_0_12px_rgba(165,119,255,0.4)]'
+                          ? 'bg-[#A577FF]/20 text-[#A577FF] border border-[#A577FF]/30 shadow-[0_0_12px_rgba(165,119,255,0.4)]' 
                           : 'text-gray-400 hover:text-white hover:bg-white/5'
                       }`}
                       title={
@@ -1392,11 +1431,13 @@ export default function CozyApp() {
                     <div 
                       onClick={(e) => {
                         e.stopPropagation();
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const clickX = e.clientX - rect.left;
-                        const ratio = Math.max(0, Math.min(1, clickX / rect.width));
-                        const curTrack = HOME_TRACKS[miniPlayerTrackIndex] || HOME_TRACKS[0];
-                        setMiniPlayerCurrentTime(Math.floor(ratio * curTrack.duration));
+                        requireAuth(() => {
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const clickX = e.clientX - rect.left;
+                          const ratio = Math.max(0, Math.min(1, clickX / rect.width));
+                          const curTrack = HOME_TRACKS[miniPlayerTrackIndex] || HOME_TRACKS[0];
+                          setMiniPlayerCurrentTime(Math.floor(ratio * curTrack.duration));
+                        }, 'Please log in or sign up first to play music.');
                       }}
                       className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden cursor-pointer group/progress relative"
                       title="Click to seek"
@@ -1422,13 +1463,13 @@ export default function CozyApp() {
               <div className="col-span-1 flex flex-col min-w-0 min-h-0">
                 <div className="flex justify-between items-center mb-3 shrink-0">
                   <h3 
-                    onClick={() => setIsStatisticView(true)}
+                    onClick={() => requireAuth(() => setIsStatisticView(true), 'Please log in or sign up first to view your activity statistics.')}
                     className="text-lg font-bold text-[#F5F7FC] cursor-pointer hover:text-[#A577FF] transition-colors"
                   >
                     Your Statistic
                   </h3>
                   <button 
-                    onClick={() => setIsStatisticView(true)}
+                    onClick={() => requireAuth(() => setIsStatisticView(true), 'Please log in or sign up first to view your activity statistics.')}
                     className="w-8 h-8 rounded-xl bg-white/5 hover:bg-[#A577FF]/20 text-gray-400 hover:text-white flex items-center justify-center transition-all cursor-pointer border border-transparent hover:border-[#A577FF]/30 group"
                     title="View Detailed Statistics"
                   >
@@ -1436,7 +1477,7 @@ export default function CozyApp() {
                   </button>
                 </div>
                 <div 
-                  onClick={() => setIsStatisticView(true)}
+                  onClick={() => requireAuth(() => setIsStatisticView(true), 'Please log in or sign up first to view your activity statistics.')}
                   className="bg-gradient-to-b from-white/5 to-transparent hover:from-white/10 rounded-[32px] border border-white/5 hover:border-[#A577FF]/30 p-6 flex-1 flex flex-col items-center justify-between relative overflow-hidden shadow-inner min-h-0 cursor-pointer transition-all group/statcard"
                 >
                   
@@ -1854,8 +1895,15 @@ export default function CozyApp() {
       <AuthModal 
         isOpen={authModalMode !== null} 
         initialMode={authModalMode || 'login'}
-        onClose={() => setAuthModalMode(null)} 
-        onLoginSuccess={() => setAuthModalMode(null)} 
+        promptMessage={authPromptMessage}
+        onClose={() => {
+          setAuthModalMode(null);
+          setAuthPromptMessage(null);
+        }} 
+        onLoginSuccess={() => {
+          setAuthModalMode(null);
+          setAuthPromptMessage(null);
+        }} 
       />
 
       <AddFriendModal 
