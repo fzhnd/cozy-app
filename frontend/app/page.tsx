@@ -518,12 +518,14 @@ export default function CozyApp() {
   );
 
   const handleJoinPublicChannel = (channel: any) => {
-    setActiveVoiceSession({ group: channel.group, channel });
-    setEnteredFromPublicChannels(true);
-    setActiveGroupId(channel.group.id);
-    setTargetChannelId(channel.id);
-    setActiveTab('group');
-    setIsPublicChannelsView(false);
+    requireAuth(() => {
+      setActiveVoiceSession({ group: channel.group, channel });
+      setEnteredFromPublicChannels(true);
+      setActiveGroupId(channel.group.id);
+      setTargetChannelId(channel.id);
+      setActiveTab('group');
+      setIsPublicChannelsView(false);
+    }, 'Please log in or sign up first to join voice rooms.');
   };
 
   const handleReturnToVoiceChannel = () => {
@@ -649,7 +651,8 @@ export default function CozyApp() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0D0524] p-4 md:p-6 gap-6 font-sans text-[#F5F7FC] selection:bg-[#A577FF] selection:text-white overflow-hidden">
+    <div className="relative flex h-screen bg-[#0D0524] p-4 md:p-6 gap-6 font-sans text-[#F5F7FC] selection:bg-[#A577FF] selection:text-white overflow-hidden">
+      <div className={`flex flex-1 min-w-0 h-full gap-6 transition-all duration-300 ${authModalMode !== null ? 'filter blur-[6px] brightness-75 select-none pointer-events-none' : ''}`}>
       
 
 
@@ -1884,6 +1887,7 @@ export default function CozyApp() {
           </div>
         </div>
       )}
+      </div>
 
       {/* MODALS */}
       <ProfileModal 

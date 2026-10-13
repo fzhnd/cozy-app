@@ -95,7 +95,10 @@ export default function AuthModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md transition-all p-4 animate-in fade-in duration-200">
+    <div 
+      style={{ backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xl transition-all p-4 animate-in fade-in duration-200"
+    >
       <div className="bg-[#150A35] border border-white/10 p-8 sm:p-9 rounded-[36px] shadow-[0_0_50px_rgba(0,0,0,0.9),0_0_30px_rgba(165,119,255,0.15)] w-full max-w-[440px] relative">
         {/* Close Button */}
         <button 
