@@ -13,29 +13,54 @@ export default function AddFriendModal({
   const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [loading, setLoading] = useState(false);
 
   const [friendRequests, setFriendRequests] = useState([
     { name: 'pocha', seed: 'Pocha', color: 'F9EBD8' },
     { name: 'leci', seed: 'Leci', color: 'F2C8F7' }
   ]);
 
-  // Dummy registered users for mockup
+  // Dummy registered users for mockup fallback
   const REGISTERED_USERS = ['luna', 'jasper', 'mimi', 'pocha', 'leci'];
 
-  const handleAddFriend = () => {
-    if (!username.trim()) return;
-    
-    if (!REGISTERED_USERS.includes(username.toLowerCase().trim())) {
-      setError('Username is not registered!');
-      setSuccess('');
-    } else {
-      setError('');
-      setSuccess(`Friend request sent to ${username}!`);
-      setTimeout(() => {
+  const handleAddFriend = async () => {
+    const trimmed = username.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const res = await fetch(`/api/user/search?query=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+
+      if (!res.ok || !data.found) {
+        setError(data.message || 'Username is not registered!');
         setSuccess('');
-        setUsername('');
-        onClose();
-      }, 1500);
+      } else {
+        setError('');
+        const targetName = data.user.name || trimmed;
+        setSuccess(`Friend request sent to ${targetName}!`);
+        setTimeout(() => {
+          setSuccess('');
+          setUsername('');
+          onClose();
+        }, 1500);
+      }
+    } catch (err) {
+      if (REGISTERED_USERS.includes(trimmed.toLowerCase())) {
+        setError('');
+        setSuccess(`Friend request sent to ${trimmed}!`);
+        setTimeout(() => {
+          setSuccess('');
+          setUsername('');
+          onClose();
+        }, 1500);
+      } else {
+        setError('Username is not registered!');
+      }
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -84,8 +109,12 @@ export default function AddFriendModal({
               placeholder="Enter a username" 
               className="flex-1 bg-transparent border-none text-white px-4 py-2 focus:outline-none text-sm placeholder-gray-600"
             />
-            <button onClick={handleAddFriend} className="bg-[#A577FF] hover:bg-[#9161eb] text-white text-sm font-bold py-2.5 px-5 rounded-lg transition-colors shrink-0 shadow-lg">
-              Send Friend Request
+            <button 
+              onClick={handleAddFriend} 
+              disabled={loading}
+              className="bg-[#A577FF] hover:bg-[#9161eb] disabled:opacity-60 text-white text-sm font-bold py-2.5 px-5 rounded-lg transition-colors shrink-0 shadow-lg cursor-pointer"
+            >
+              {loading ? 'Searching...' : 'Send Friend Request'}
             </button>
           </div>
           {error && <p className="text-red-400 text-xs mt-2 font-medium px-2">{error}</p>}
