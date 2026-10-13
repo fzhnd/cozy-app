@@ -687,14 +687,14 @@ export default function CozyApp() {
     { id: 1, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Elden Ring', text: 'invited you to play', time: '15m ago', read: false, status: 'active' },
     { id: 11, type: 'channel_invite', name: 'Mimi', seed: 'Mimi', channel: 'Lobby', channelId: 'vc-1', groupId: 'grp-1', text: 'invited you to voice room', time: '10m ago', read: false, status: 'active' },
     { id: 12, type: 'group_invite', name: 'Felix', seed: 'Felix', groupName: 'Cozy Hangout', groupId: 'grp-1', text: 'invited you to join group', time: '20m ago', read: false, status: 'active' },
-    { id: 2, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '1h ago', read: false, status: 'expired' },
+    { id: 2, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'invited you to', time: '1h ago', read: false, status: 'expired' },
     { id: 3, type: 'game_invite', name: 'Oscar', seed: 'Oscar', game: 'Dishonored', text: 'invited you to play', time: '2h ago', read: false, status: 'expired' },
     { id: 4, type: 'game_invite', name: 'Aneka', seed: 'Aneka', game: 'Uncharted 4', text: 'invited you to play', time: '3h ago', read: false, status: 'active' },
     { id: 5, type: 'photobooth', name: 'Mimi', seed: 'Mimi', activity: 'Photobooth', text: 'created a new', time: '5h ago', read: true, status: 'expired' },
-    { id: 6, type: 'activity', name: 'Felix', seed: 'Felix', activity: 'Listening Together', text: 'started a', time: '7h ago', read: true, status: 'expired' },
+    { id: 6, type: 'activity', name: 'Felix', seed: 'Felix', activity: 'Listening Together', text: 'invited you to', time: '7h ago', read: true, status: 'expired' },
     { id: 7, type: 'photobooth', name: 'Oscar', seed: 'Oscar', activity: 'Photobooth', text: 'created a new', time: 'Yesterday', read: true, status: 'expired' },
     { id: 8, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Persona 5', text: 'invited you to play', time: 'Yesterday', read: true, status: 'expired' },
-    { id: 9, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'started a', time: '2 days ago', read: true, status: 'expired' },
+    { id: 9, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'invited you to', time: '2 days ago', read: true, status: 'expired' },
     { id: 10, type: 'photobooth', name: 'Aneka', seed: 'Aneka', activity: 'Photobooth', text: 'created a new', time: '3 days ago', read: true, status: 'expired' },
   ]);
 
@@ -729,7 +729,7 @@ export default function CozyApp() {
                   : (inv.type === 'group_invite' 
                     ? 'invited you to join group' 
                     : (inv.type === 'activity' 
-                      ? (inv.activity === 'Listening Together' ? 'invited you to listen together' : 'invited you to watch together')
+                      ? 'invited you to' 
                       : 'invited you to'))),
               time: inv.time || 'Just now',
               read: inv.read || false,
@@ -872,6 +872,18 @@ export default function CozyApp() {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
       setActiveListeningFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
       setActiveTab('music');
+
+      // Update invitation status to 'accepted' in Supabase PostgreSQL
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invitationId: n.id,
+          senderName: n.name,
+          type: 'activity',
+          status: 'accepted'
+        })
+      }).catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth') {
       setActiveTab('photobooth');
     }

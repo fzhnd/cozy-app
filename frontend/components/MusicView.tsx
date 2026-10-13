@@ -178,16 +178,47 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
     }).catch(err => console.error("Error sending listening invite:", err));
   };
 
-  // Simulate friend joining for demo friends if waiting
+  // Poll sent invitation status when in waiting state (until friend accepts or session expires)
   useEffect(() => {
-    if (friendState === 'waiting') {
+    if (friendState !== 'waiting' || !activeFriend) return;
+
+    // For built-in mock bots that aren't real users (only when not a real friend)
+    const isMockBot = !activeFriend.isRealFriend && ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(activeFriend.name);
+
+    if (isMockBot) {
+      // Simulate demo bot accepting after 5 seconds
       const t = setTimeout(() => {
         setFriendState('joined');
-        setToastMessage(`Started listening with ${activeFriend?.name || 'Friend'}`);
+        setToastMessage(`Started listening with ${activeFriend.name}`);
         setTimeout(() => setToastMessage(null), 3000);
-      }, 3000);
+      }, 5000);
       return () => clearTimeout(t);
     }
+
+    // For real users (such as 'ou'): NEVER auto-accept! Poll Supabase until accepted
+    const checkAcceptance = () => {
+      fetch('/api/invitations')
+        .then(res => res.json())
+        .then(res => {
+          if (res.success && Array.isArray(res.sentInvitations)) {
+            const accepted = res.sentInvitations.find((inv: any) => 
+              inv.receiverName?.toLowerCase() === activeFriend.name?.toLowerCase() &&
+              inv.type === 'activity' &&
+              inv.status === 'accepted'
+            );
+            if (accepted) {
+              setFriendState('joined');
+              setToastMessage(`${activeFriend.name} accepted! Started listening together`);
+              setTimeout(() => setToastMessage(null), 3000);
+            }
+          }
+        })
+        .catch(err => console.error("Error polling sent invitations:", err));
+    };
+
+    checkAcceptance();
+    const interval = setInterval(checkAcceptance, 2500);
+    return () => clearInterval(interval);
   }, [friendState, activeFriend]);
 
   // Player progress
@@ -1190,7 +1221,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
         {/* === RIGHT COLUMN === */}
         <div className="w-80 flex flex-col border-l border-white/5 bg-white/[0.02] shrink-0">
           <div className="p-6 flex items-center justify-between border-b border-white/5 relative h-[89px]">
-            {friendState === 'joined' ? (
+            {(friendState === 'joined' || friendState === 'waiting') ? (
               <button 
                 onClick={() => { 
                   setFriendState('none'); 
@@ -1203,7 +1234,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
                   if (onGoHome) onGoHome(); 
                 }}
                 className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
-                title="Leave Listening Session"
+                title={friendState === 'waiting' ? "Cancel Invitation" : "Leave Listening Session"}
               >
                 <LogOut size={16} />
               </button>
@@ -1251,11 +1282,20 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
 
             <div className="flex items-center -space-x-3">
               {(friendState === 'waiting' || friendState === 'joined') && activeFriend && (
-                <img 
-                  src={activeFriend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeFriend.seed || activeFriend.name}&backgroundColor=${activeFriend.color || 'A577FF'}`} 
-                  className={`w-10 h-10 rounded-full border-2 border-[#150A35] relative z-0 transition-opacity ${friendState === 'waiting' ? 'animate-pulse opacity-60' : 'opacity-100'}`} 
-                  alt={activeFriend.name} 
-                />
+                <div className="relative">
+                  <img 
+                    src={activeFriend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${activeFriend.seed || activeFriend.name}&backgroundColor=${activeFriend.color || 'A577FF'}`} 
+                    className={`w-10 h-10 rounded-full border-2 transition-all relative z-0 ${
+                      friendState === 'waiting' 
+                        ? 'animate-pulse opacity-70 ring-2 ring-yellow-400/80 border-yellow-400' 
+                        : 'border-[#150A35] opacity-100 ring-0'
+                    }`} 
+                    alt={activeFriend.name} 
+                  />
+                  {friendState === 'waiting' && (
+                    <span className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 border-2 border-[#150A35] rounded-full animate-ping z-20 pointer-events-none" />
+                  )}
+                </div>
               )}
               <img src={userImage} className="w-10 h-10 rounded-full border-2 border-[#150A35] relative z-10" alt="Me" />
             </div>
@@ -1263,13 +1303,20 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
           </div>
           
           <div className="p-6 flex flex-col flex-1 min-h-0">
-            {friendState === 'joined' ? (
+            {(friendState === 'joined' || friendState === 'waiting') ? (
               // Listening Together Queue
               <>
                 <div className="flex items-center justify-between mb-6">
                   <div>
                     <h3 className="text-lg font-bold text-white">Next Play</h3>
-                    <p className="text-[10px] text-[#A577FF] font-bold">Listening with {activeFriend?.name}</p>
+                    {friendState === 'waiting' ? (
+                      <p className="text-[10px] text-yellow-400 font-bold flex items-center gap-1.5 animate-pulse">
+                        <span className="w-1.5 h-1.5 rounded-full bg-yellow-400"></span>
+                        Waiting for {activeFriend?.name}...
+                      </p>
+                    ) : (
+                      <p className="text-[10px] text-[#A577FF] font-bold">Listening with {activeFriend?.name}</p>
+                    )}
                   </div>
                   <button 
                     onClick={() => setAddMusicType('queue')}

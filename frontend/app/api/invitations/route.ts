@@ -75,10 +75,32 @@ export async function GET() {
       createdAt: r.createdAt
     }));
 
-    return NextResponse.json({ success: true, invitations }, { status: 200 });
+    // Fetch invitations sent by current user (to observe if recipient accepted)
+    const sentRows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM "Invitations" 
+       WHERE LOWER("senderEmail") = $1 OR LOWER("senderName") = $2 
+       ORDER BY "createdAt" DESC LIMIT 30;`,
+      myEmail,
+      myName
+    );
+
+    const sentInvitations = sentRows.map((r, idx) => ({
+      id: r.id || `inv_sent_${idx}`,
+      senderEmail: r.senderEmail,
+      name: r.senderName,
+      receiverEmail: r.receiverEmail,
+      receiverName: r.receiverName,
+      type: r.type,
+      targetName: r.targetName,
+      status: r.status,
+      time: formatRelativeTime(new Date(r.createdAt)),
+      createdAt: r.createdAt
+    }));
+
+    return NextResponse.json({ success: true, invitations, sentInvitations }, { status: 200 });
   } catch (error: any) {
     console.error("GET Invitations error:", error);
-    return NextResponse.json({ success: false, invitations: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ success: false, invitations: [], sentInvitations: [], error: error.message }, { status: 500 });
   }
 }
 
@@ -167,7 +189,8 @@ export async function PATCH(req: Request) {
 
     await ensureInvitationsTable();
 
-    const senderEmail = session.user.email.toLowerCase().trim();
+    const userEmail = session.user.email.toLowerCase().trim();
+    const userName = (session.user.name || userEmail.split("@")[0]).toLowerCase().trim();
 
     if (invitationId) {
       await prisma.$executeRawUnsafe(
@@ -175,12 +198,39 @@ export async function PATCH(req: Request) {
         status,
         invitationId
       );
+    } else if (status === 'accepted') {
+      // Receiver accepting an invitation
+      const targetSender = (body.senderName || '').toLowerCase().trim();
+      const targetType = body.type || 'activity';
+      if (targetSender) {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() 
+           WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
+             AND LOWER("senderName") = $3
+             AND "type" = $4
+             AND "status" = 'active';`,
+          userEmail,
+          userName,
+          targetSender,
+          targetType
+        );
+      } else {
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() 
+           WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
+             AND "type" = $3
+             AND "status" = 'active';`,
+          userEmail,
+          userName,
+          targetType
+        );
+      }
     } else if (type) {
       // Expire all active invitations sent by this user for the specified type
       await prisma.$executeRawUnsafe(
         `UPDATE "Invitations" SET "status" = $1, "updatedAt" = NOW() WHERE LOWER("senderEmail") = $2 AND "type" = $3 AND "status" = 'active';`,
         status,
-        senderEmail,
+        userEmail,
         type
       );
     }
