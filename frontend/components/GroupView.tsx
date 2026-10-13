@@ -1612,11 +1612,12 @@ export default function GroupView({
                         {member.name}
                       </span>
                       {isOwner && (
-                        <Crown 
-                          size={13} 
-                          className="text-yellow-400 fill-yellow-400 shrink-0" 
-                          title="Group Owner"
-                        />
+                        <span title="Group Owner" className="inline-flex items-center">
+                          <Crown 
+                            size={13} 
+                            className="text-yellow-400 fill-yellow-400 shrink-0" 
+                          />
+                        </span>
                       )}
                     </div>
                   </div>
@@ -2043,7 +2044,7 @@ export default function GroupView({
                     if (onDeleteChannel) {
                       onDeleteChannel(group.id, targetChan.id);
                     }
-                    if (activeChannel?.id === targetChan.id) {
+                    if ((activeChannel as any)?.id === targetChan.id) {
                       setActiveChannel(null);
                     }
                     setChannelMenuOpenId(null);

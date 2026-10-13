@@ -35,7 +35,7 @@ export default function ChatView({
   const [playingMessageId, setPlayingMessageId] = useState<number | null>(null);
   const [playbackProgress, setPlaybackProgress] = useState(0);
   const [previewProgress, setPreviewProgress] = useState(0);
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
@@ -485,13 +485,13 @@ export default function ChatView({
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-baseline mb-1">
-                    <h4 className={`text-sm font-bold truncate ${c.active ? 'text-white' : 'text-gray-200'}`}>{c.name}</h4>
+                    <h4 className={`text-sm font-bold truncate ${activeChatName === c.name ? 'text-white' : 'text-gray-200'}`}>{c.name}</h4>
                     <span className="text-[10px] text-gray-500 flex items-center gap-1">
                       {c.pinned && <Pin size={10} className="text-[#A577FF] fill-current" />}
                       {c.time}
                     </span>
                   </div>
-                  <p className={`text-xs truncate ${c.active ? 'text-gray-300' : 'text-gray-500'}`}>{c.msg}</p>
+                  <p className={`text-xs truncate ${activeChatName === c.name ? 'text-gray-300' : 'text-gray-500'}`}>{c.msg}</p>
                 </div>
               </div>
             ))}

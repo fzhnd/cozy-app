@@ -676,6 +676,7 @@ export default function PhotoboothView({
     ctx.fillRect(0, 0, stripWidth, totalHeight);
 
     // Draw Photos
+    const imagesToLoad = capturedPhotos;
     let loadedCount = 0;
     const finalizeDownload = () => {
       // Draw Footer Watermark / Date / Title

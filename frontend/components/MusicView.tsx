@@ -26,7 +26,7 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
   const [repeatState, setRepeatState] = useState<'none' | 'all' | 'one'>('none');
 
   // Middle View State
-  const [middleView, setMiddleView] = useState<'main' | 'recently_played' | 'liked_songs' | 'explore_albums' | 'explore_playlists' | 'explore_artists' | 'playlist_detail'>('main');
+  const [middleView, setMiddleView] = useState<'main' | 'recently_played' | 'liked_songs' | 'explore_albums' | 'explore_playlists' | 'explore_artists' | 'playlist_detail' | 'trending_now'>('main');
   const [expandedRecents, setExpandedRecents] = useState<string[]>([]);
   const [activePlaylistId, setActivePlaylistId] = useState<string | null>(null);
 
@@ -1112,19 +1112,21 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
                     <div className="w-1/4 hidden md:block text-xs text-gray-400 truncate pr-4">{track.artist}</div>
                     <div className="w-1/4 hidden lg:block text-xs text-gray-400 truncate pr-4">{track.album}</div>
                     <div className="w-24 flex items-center justify-end gap-3">
-                      <Heart 
-                        size={14} 
-                        className={`cursor-pointer hover:scale-110 transition-transform ${likedSongs.some(s => s.id === track.id) ? 'text-pink-500 fill-pink-500' : 'text-gray-500 hover:text-pink-500'}`} 
-                        onClick={(e) => handleToggleLike(e, track)}
-                        title="Love"
-                      />
-                      <div className="relative">
-                        <ListPlus 
+                      <span title="Love" className="inline-flex items-center">
+                        <Heart 
                           size={14} 
-                          className="text-gray-500 hover:text-white cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
-                          onClick={(e) => { e.stopPropagation(); setCurrentTrack(track); setTrackPlaylistPopupId(track.id); }}
-                          title="Add to Playlist"
+                          className={`cursor-pointer hover:scale-110 transition-transform ${likedSongs.some(s => s.id === track.id) ? 'text-pink-500 fill-pink-500' : 'text-gray-500 hover:text-pink-500'}`} 
+                          onClick={(e) => handleToggleLike(e, track)}
                         />
+                      </span>
+                      <div className="relative">
+                        <span title="Add to Playlist" className="inline-flex items-center">
+                          <ListPlus 
+                            size={14} 
+                            className="text-gray-500 hover:text-white cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
+                            onClick={(e) => { e.stopPropagation(); setCurrentTrack(track); setTrackPlaylistPopupId(track.id); }}
+                          />
+                        </span>
                         {trackPlaylistPopupId === track.id && (
                           <>
                             <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setTrackPlaylistPopupId(null); }} />
@@ -1146,12 +1148,13 @@ export default function MusicView({ userImage, onGoHome }: MusicViewProps) {
                           </>
                         )}
                       </div>
-                      <Trash2 
-                        size={14} 
-                        className="text-gray-500 hover:text-red-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
-                        onClick={(e) => handleRemoveTrackFromPlaylist(e, track.id)}
-                        title="Remove from this playlist"
-                      />
+                      <span title="Remove from this playlist" className="inline-flex items-center">
+                        <Trash2 
+                          size={14} 
+                          className="text-gray-500 hover:text-red-500 cursor-pointer opacity-0 group-hover:opacity-100 transition-all"
+                          onClick={(e) => handleRemoveTrackFromPlaylist(e, track.id)}
+                        />
+                      </span>
                       <span className="text-xs text-gray-400 w-8 text-right">{track.time}</span>
                     </div>
                   </div>
