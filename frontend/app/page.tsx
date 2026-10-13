@@ -2184,7 +2184,7 @@ export default function CozyApp() {
           <div 
             onClick={() => setIsProfileModalOpen(true)} 
             className="relative group cursor-pointer mb-6"
-            onMouseEnter={(e) => showSidebarTooltip('Edit Profile', e)}
+            onMouseEnter={(e) => showSidebarTooltip('Profile', e)}
             onMouseLeave={hideSidebarTooltip}
           >
             <div className="w-12 h-12 rounded-full p-0.5 bg-gradient-to-b from-[#A577FF] to-transparent shadow-[0_0_15px_rgba(165,119,255,0.2)]">
