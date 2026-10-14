@@ -497,6 +497,7 @@ export default function GroupView({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friendName,
+        senderName: userName,
         type: activeChannel ? 'channel_invite' : 'group_invite',
         targetName: activeChannel ? cleanChanName : (group.name || 'Group'),
         channelId: activeChannel?.id,
@@ -686,6 +687,7 @@ export default function GroupView({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                       action: 'leave',
+                      senderName: userName,
                       type: 'channel_invite',
                       targetName: cleanChanName,
                       channelId: activeChannel.id

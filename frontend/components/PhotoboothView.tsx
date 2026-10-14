@@ -272,15 +272,22 @@ export default function PhotoboothView({
       fetch('/api/invitations', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'join', partnerName: initialFriend.name, type: 'photobooth', targetName: 'Photobooth' })
+        body: JSON.stringify({ 
+          action: 'join', 
+          partnerName: initialFriend.name, 
+          senderName: userName,
+          type: 'photobooth', 
+          targetName: 'Photobooth',
+          status: 'accepted'
+        })
       }).catch(e => {});
     }
-  }, [initialFriend]);
+  }, [initialFriend, userName]);
 
   // Active Photobooth session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
     const syncSession = () => {
-      fetch('/api/invitations')
+      fetch(`/api/invitations?username=${encodeURIComponent(userName || '')}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success) return;
@@ -353,6 +360,7 @@ export default function PhotoboothView({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friend.name,
+        senderName: userName,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
@@ -375,6 +383,7 @@ export default function PhotoboothView({
       body: JSON.stringify({
         action: 'leave',
         partnerName: partner?.name,
+        senderName: userName,
         type: 'photobooth',
         targetName: 'Photobooth'
       })

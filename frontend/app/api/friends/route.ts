@@ -2,42 +2,40 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
-
-// Ensure Friendships table exists in Supabase PostgreSQL
-async function ensureFriendshipsTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "Friendships" (
-      "id" TEXT PRIMARY KEY,
-      "user1Email" TEXT NOT NULL,
-      "user1Name" TEXT NOT NULL,
-      "user1Image" TEXT,
-      "user2Email" TEXT NOT NULL,
-      "user2Name" TEXT NOT NULL,
-      "user2Image" TEXT,
-      "status" TEXT NOT NULL DEFAULT 'pending',
-      "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
-      "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE IF EXISTS "Friendships" ENABLE ROW LEVEL SECURITY;
-  `);
-}
+import { ensureDatabaseTables } from "@/lib/dbInit";
 
 // GET: Fetch accepted friends and pending friend requests for current user
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const session = await getServerSession(authOptions);
     if (!session || !session.user || !session.user.email) {
-      return NextResponse.json({ friends: [], pendingRequests: [], sentRequests: [] }, { status: 200 });
+      return NextResponse.json({ success: true, friends: [], pendingRequests: [], sentRequests: [] }, { status: 200 });
     }
 
-    await ensureFriendshipsTable();
+    await ensureDatabaseTables();
 
     const myEmail = session.user.email.toLowerCase().trim();
+    const dbSender = await prisma.user.findUnique({
+      where: { email: myEmail },
+      select: { name: true }
+    });
+    const myDbName = dbSender?.name?.toLowerCase().trim() || "";
+    const mySessionName = session.user.name?.toLowerCase().trim() || "";
+    const myEmailPrefix = myEmail.split("@")[0];
+
+    const { searchParams } = new URL(req.url);
+    const paramUsername = searchParams.get("username")?.toLowerCase().trim() || "";
+
+    const myNames = Array.from(new Set([myDbName, mySessionName, paramUsername, myEmailPrefix].filter(Boolean)));
 
     // 1. Pending requests sent TO me (waiting for my approval)
     const pendingRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Friendships" WHERE LOWER("user2Email") = $1 AND "status" = 'pending' ORDER BY "createdAt" DESC;`,
-      myEmail
+      `SELECT * FROM "Friendships" 
+       WHERE (LOWER("user2Email") = $1 OR LOWER("user2Name") = ANY($2::text[])) 
+         AND "status" = 'pending' 
+       ORDER BY "createdAt" DESC;`,
+      myEmail,
+      myNames
     );
 
     const pendingRequests = pendingRows.map(r => ({
@@ -52,8 +50,12 @@ export async function GET() {
 
     // 2. Pending requests sent BY me
     const sentRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Friendships" WHERE LOWER("user1Email") = $1 AND "status" = 'pending' ORDER BY "createdAt" DESC;`,
-      myEmail
+      `SELECT * FROM "Friendships" 
+       WHERE (LOWER("user1Email") = $1 OR LOWER("user1Name") = ANY($2::text[])) 
+         AND "status" = 'pending' 
+       ORDER BY "createdAt" DESC;`,
+      myEmail,
+      myNames
     );
 
     const sentRequests = sentRows.map(r => ({
@@ -65,12 +67,23 @@ export async function GET() {
 
     // 3. Accepted friendships (both directions)
     const acceptedRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Friendships" WHERE "status" = 'accepted' AND (LOWER("user1Email") = $1 OR LOWER("user2Email") = $1) ORDER BY "updatedAt" DESC;`,
-      myEmail
+      `SELECT * FROM "Friendships" 
+       WHERE "status" = 'accepted' 
+         AND (
+           LOWER("user1Email") = $1 OR LOWER("user1Name") = ANY($2::text[])
+           OR
+           LOWER("user2Email") = $1 OR LOWER("user2Name") = ANY($2::text[])
+         ) 
+       ORDER BY "updatedAt" DESC;`,
+      myEmail,
+      myNames
     );
 
     const friends = acceptedRows.map(r => {
-      const isUser1Me = r.user1Email.toLowerCase() === myEmail;
+      const isUser1Me = (
+        r.user1Email?.toLowerCase() === myEmail ||
+        myNames.includes(r.user1Name?.toLowerCase())
+      );
       const friendName = isUser1Me ? r.user2Name : r.user1Name;
       const friendEmail = isUser1Me ? r.user2Email : r.user1Email;
       const friendImage = isUser1Me ? r.user2Image : r.user1Image;
@@ -97,7 +110,7 @@ export async function GET() {
 
   } catch (error: any) {
     console.error("GET Friends error:", error);
-    return NextResponse.json({ message: "Failed to load friends", error: error.message }, { status: 500 });
+    return NextResponse.json({ success: false, friends: [], pendingRequests: [], sentRequests: [], message: "Failed to load friends", error: error.message }, { status: 500 });
   }
 }
 
@@ -109,18 +122,22 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "You must be logged in to send friend requests." }, { status: 401 });
     }
 
-    const { targetUsername } = await req.json();
+    const { targetUsername, senderName: clientSenderName } = await req.json();
     const cleanTarget = targetUsername?.trim();
 
     if (!cleanTarget) {
       return NextResponse.json({ message: "Username cannot be empty." }, { status: 400 });
     }
 
-    await ensureFriendshipsTable();
+    await ensureDatabaseTables();
 
     const senderEmail = session.user.email.toLowerCase().trim();
-    const senderName = session.user.name?.trim() || senderEmail.split('@')[0];
-    const senderImage = session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=F9EBD8`;
+    const dbSender = await prisma.user.findUnique({
+      where: { email: senderEmail },
+      select: { name: true, image: true }
+    });
+    const senderName = clientSenderName?.trim() || dbSender?.name?.trim() || session.user.name?.trim() || senderEmail.split('@')[0];
+    const senderImage = dbSender?.image || session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=F9EBD8`;
 
     // Cannot add self
     if (cleanTarget.toLowerCase() === senderEmail || cleanTarget.toLowerCase() === senderName.toLowerCase()) {
@@ -158,7 +175,7 @@ export async function POST(req: Request) {
 
       targetUser = {
         name: dbUser.name || cleanTarget,
-        email: dbUser.email?.toLowerCase() || '',
+        email: dbUser.email?.toLowerCase() || `${cleanTarget.toLowerCase()}@user.cozy`,
         image: dbUser.image
       };
     }
@@ -167,14 +184,25 @@ export async function POST(req: Request) {
     const receiverName = targetUser.name;
     const receiverImage = targetUser.image;
 
-    // Check if a relationship already exists
+    // Check if a relationship already exists (by email OR name in either direction)
     const existing = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "Friendships" WHERE 
-        (LOWER("user1Email") = $1 AND LOWER("user2Email") = $2) OR 
-        (LOWER("user1Email") = $2 AND LOWER("user2Email") = $1)
+        (
+          (LOWER("user1Email") = $1 OR LOWER("user1Name") = $2)
+          AND
+          (LOWER("user2Email") = $3 OR LOWER("user2Name") = $4)
+        )
+        OR 
+        (
+          (LOWER("user1Email") = $3 OR LOWER("user1Name") = $4)
+          AND
+          (LOWER("user2Email") = $1 OR LOWER("user2Name") = $2)
+        )
        LIMIT 1;`,
       senderEmail,
-      receiverEmail
+      senderName.toLowerCase(),
+      receiverEmail,
+      receiverName.toLowerCase()
     );
 
     if (existing && existing.length > 0) {
@@ -184,7 +212,11 @@ export async function POST(req: Request) {
       }
 
       if (rel.status === 'pending') {
-        if (rel.user1Email.toLowerCase() === senderEmail) {
+        const isSentByMe = (
+          rel.user1Email.toLowerCase() === senderEmail ||
+          rel.user1Name.toLowerCase() === senderName.toLowerCase()
+        );
+        if (isSentByMe) {
           return NextResponse.json({ message: `Friend request to ${receiverName} is already pending.` }, { status: 400 });
         } else {
           // The other user already sent a request to me -> Auto accept!
@@ -198,6 +230,26 @@ export async function POST(req: Request) {
           }, { status: 200 });
         }
       }
+
+      // If status is rejected, unfriend, or expired -> Reset to pending!
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Friendships" 
+         SET "status" = 'pending', "user1Email" = $1, "user1Name" = $2, "user1Image" = $3,
+             "user2Email" = $4, "user2Name" = $5, "user2Image" = $6, "updatedAt" = NOW()
+         WHERE "id" = $7;`,
+        senderEmail,
+        senderName,
+        senderImage,
+        receiverEmail,
+        receiverName,
+        receiverImage,
+        rel.id
+      );
+
+      return NextResponse.json({
+        success: true,
+        message: `Friend request sent to ${receiverName}! Waiting for approval.`
+      }, { status: 201 });
     }
 
     // Insert new pending friend request
@@ -221,7 +273,7 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("POST Friend Request error:", error);
-    return NextResponse.json({ message: "Failed to send friend request", error: error.message }, { status: 500 });
+    return NextResponse.json({ message: "Failed to send friend request", error: error.message || String(error) }, { status: 500 });
   }
 }
 
@@ -235,21 +287,38 @@ export async function DELETE(req: Request) {
 
     const { targetEmail, targetName } = await req.json();
     const myEmail = session.user.email.toLowerCase().trim();
+    const dbSender = await prisma.user.findUnique({
+      where: { email: myEmail },
+      select: { name: true }
+    });
+    const myName = (dbSender?.name || session.user.name || myEmail.split('@')[0]).toLowerCase().trim();
+    const cleanTargetEmail = (targetEmail || '').toLowerCase().trim();
+    const cleanTargetName = (targetName || '').toLowerCase().trim();
 
-    await ensureFriendshipsTable();
+    await ensureDatabaseTables();
 
     await prisma.$executeRawUnsafe(
       `DELETE FROM "Friendships" WHERE 
-        (LOWER("user1Email") = $1 AND (LOWER("user2Email") = $2 OR LOWER("user2Name") = $3)) OR
-        (LOWER("user2Email") = $1 AND (LOWER("user1Email") = $2 OR LOWER("user1Name") = $3));`,
+        (
+          (LOWER("user1Email") = $1 OR LOWER("user1Name") = $2)
+          AND
+          ((LOWER("user2Email") = $3 AND $3 != '') OR (LOWER("user2Name") = $4 AND $4 != ''))
+        )
+        OR
+        (
+          (LOWER("user2Email") = $1 OR LOWER("user2Name") = $2)
+          AND
+          ((LOWER("user1Email") = $3 AND $3 != '') OR (LOWER("user1Name") = $4 AND $4 != ''))
+        );`,
       myEmail,
-      (targetEmail || '').toLowerCase(),
-      (targetName || '').toLowerCase()
+      myName,
+      cleanTargetEmail,
+      cleanTargetName
     );
 
     return NextResponse.json({ success: true, message: "Friend removed successfully." }, { status: 200 });
   } catch (error: any) {
     console.error("DELETE Friend error:", error);
-    return NextResponse.json({ message: "Failed to unfriend", error: error.message }, { status: 500 });
+    return NextResponse.json({ message: "Failed to unfriend", error: error.message || String(error) }, { status: 500 });
   }
 }

@@ -3,18 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
 
-// Ensure synchronization table exists in PostgreSQL
-async function ensureSyncTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "UserSyncData" (
-      "userId" TEXT PRIMARY KEY,
-      "email" TEXT NOT NULL,
-      "data" JSONB NOT NULL,
-      "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE IF EXISTS "UserSyncData" ENABLE ROW LEVEL SECURITY;
-  `);
-}
+import { ensureDatabaseTables } from "@/lib/dbInit";
 
 // GET: Retrieve user sync data across devices
 export async function GET() {
@@ -24,7 +13,7 @@ export async function GET() {
       return NextResponse.json({ message: "Not authenticated" }, { status: 401 });
     }
 
-    await ensureSyncTable();
+    await ensureDatabaseTables();
 
     const userEmail = session.user.email.toLowerCase();
     const rows = await prisma.$queryRawUnsafe<any[]>(
@@ -58,7 +47,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Data payload is required" }, { status: 400 });
     }
 
-    await ensureSyncTable();
+    await ensureDatabaseTables();
 
     const userEmail = session.user.email.toLowerCase();
     const userId = (session.user as any).id || userEmail;

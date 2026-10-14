@@ -6,11 +6,13 @@ import { X, Check, Users } from 'lucide-react';
 export default function AddFriendModal({ 
   isOpen, 
   onClose,
-  onAcceptFriend
+  onAcceptFriend,
+  currentUserName
 }: { 
   isOpen: boolean, 
   onClose: () => void,
-  onAcceptFriend?: (friend: any) => void
+  onAcceptFriend?: (friend: any) => void,
+  currentUserName?: string
 }) {
   const [username, setUsername] = useState('');
   const [error, setError] = useState('');
@@ -20,7 +22,10 @@ export default function AddFriendModal({
 
   // Fetch pending friend requests from Supabase PostgreSQL when modal opens
   const fetchPendingRequests = () => {
-    fetch('/api/friends')
+    const url = currentUserName 
+      ? `/api/friends?username=${encodeURIComponent(currentUserName)}`
+      : '/api/friends';
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         if (data.pendingRequests && Array.isArray(data.pendingRequests)) {
@@ -36,7 +41,7 @@ export default function AddFriendModal({
       setError('');
       setSuccess('');
     }
-  }, [isOpen]);
+  }, [isOpen, currentUserName]);
 
   // Send a real friend request to another user
   const handleAddFriend = async () => {
@@ -50,12 +55,12 @@ export default function AddFriendModal({
       const res = await fetch('/api/friends', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUsername: trimmed })
+        body: JSON.stringify({ targetUsername: trimmed, senderName: currentUserName })
       });
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        setError(data.message || 'Failed to send friend request.');
+        setError(data.error ? `${data.message} (${data.error})` : (data.message || 'Failed to send friend request.'));
       } else {
         setSuccess(data.message || `Friend request sent to ${trimmed}!`);
         setUsername('');
@@ -74,7 +79,7 @@ export default function AddFriendModal({
         const res = await fetch('/api/friends/respond', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ requestId: req.id, action: 'accept' })
+          body: JSON.stringify({ requestId: req.id, action: 'accept', username: currentUserName })
         });
         const data = await res.json();
         if (data.success) {

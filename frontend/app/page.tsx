@@ -600,6 +600,7 @@ export default function CozyApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'leave',
+          senderName: userName,
           type: 'channel_invite',
           targetName: cleanChanName,
           channelId: activeVoiceSession.channel.id
@@ -675,7 +676,8 @@ export default function CozyApp() {
   // Poll real friends & pending friend requests from Supabase PostgreSQL
   const refreshFriendsData = () => {
     if (!session?.user?.email) return;
-    fetch('/api/friends')
+    const url = `/api/friends?username=${encodeURIComponent(userName)}`;
+    fetch(url)
       .then(res => res.json())
       .then(res => {
         if (res.success) {
@@ -700,7 +702,7 @@ export default function CozyApp() {
     refreshFriendsData();
     const interval = setInterval(refreshFriendsData, 4000);
     return () => clearInterval(interval);
-  }, [session?.user?.email]);
+  }, [session?.user?.email, userName]);
 
   const [notifications, setNotifications] = useState([
     { id: 1, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Elden Ring', text: 'invited you to play', time: '15m ago', read: false, status: 'active' },
@@ -709,12 +711,12 @@ export default function CozyApp() {
     { id: 2, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'invited you to', time: '1h ago', read: false, status: 'expired' },
     { id: 3, type: 'game_invite', name: 'Oscar', seed: 'Oscar', game: 'Dishonored', text: 'invited you to play', time: '2h ago', read: false, status: 'expired' },
     { id: 4, type: 'game_invite', name: 'Aneka', seed: 'Aneka', game: 'Uncharted 4', text: 'invited you to play', time: '3h ago', read: false, status: 'active' },
-    { id: 5, type: 'photobooth', name: 'Mimi', seed: 'Mimi', activity: 'Photobooth', text: 'created a new', time: '5h ago', read: true, status: 'expired' },
+    { id: 5, type: 'photobooth', name: 'Mimi', seed: 'Mimi', activity: 'Photobooth', text: 'invited you to', time: '5h ago', read: true, status: 'expired' },
     { id: 6, type: 'activity', name: 'Felix', seed: 'Felix', activity: 'Listening Together', text: 'invited you to', time: '7h ago', read: true, status: 'expired' },
-    { id: 7, type: 'photobooth', name: 'Oscar', seed: 'Oscar', activity: 'Photobooth', text: 'created a new', time: 'Yesterday', read: true, status: 'expired' },
+    { id: 7, type: 'photobooth', name: 'Oscar', seed: 'Oscar', activity: 'Photobooth', text: 'invited you to', time: 'Yesterday', read: true, status: 'expired' },
     { id: 8, type: 'game_invite', name: 'Luna', seed: 'Luna', game: 'Persona 5', text: 'invited you to play', time: 'Yesterday', read: true, status: 'expired' },
     { id: 9, type: 'activity', name: 'Jasper', seed: 'Jasper', activity: 'Watch Together', text: 'invited you to', time: '2 days ago', read: true, status: 'expired' },
-    { id: 10, type: 'photobooth', name: 'Aneka', seed: 'Aneka', activity: 'Photobooth', text: 'created a new', time: '3 days ago', read: true, status: 'expired' },
+    { id: 10, type: 'photobooth', name: 'Aneka', seed: 'Aneka', activity: 'Photobooth', text: 'invited you to', time: '3 days ago', read: true, status: 'expired' },
   ]);
 
   const [activeListeningFriend, setActiveListeningFriend] = useState<any>(null);
@@ -725,7 +727,8 @@ export default function CozyApp() {
   // Poll invitations from Supabase PostgreSQL
   const refreshInvitations = () => {
     if (!session?.user?.email) return;
-    fetch('/api/invitations')
+    const url = `/api/invitations?username=${encodeURIComponent(userName)}`;
+    fetch(url)
       .then(res => res.json())
       .then(res => {
         if (res.success && Array.isArray(res.invitations)) {
@@ -748,9 +751,7 @@ export default function CozyApp() {
                   ? 'invited you to voice room' 
                   : (inv.type === 'group_invite' 
                     ? 'invited you to join group' 
-                    : (inv.type === 'activity' 
-                      ? 'invited you to' 
-                      : 'invited you to'))),
+                    : 'invited you to')),
               time: inv.time || 'Just now',
               read: inv.read || false,
               status: inv.status,
@@ -771,7 +772,7 @@ export default function CozyApp() {
     refreshInvitations();
     const interval = setInterval(refreshInvitations, 2000);
     return () => clearInterval(interval);
-  }, [session?.user?.email]);
+  }, [session?.user?.email, userName]);
 
   // Determine whether an invitation is actively joinable or expired
   const checkInviteStatus = (n: any) => {
@@ -902,6 +903,7 @@ export default function CozyApp() {
           action: 'join',
           invitationId: n.id,
           partnerName: n.name,
+          senderName: userName,
           type: 'channel_invite',
           targetName: n.channel || n.targetName,
           channelId: n.channelId,
@@ -931,6 +933,7 @@ export default function CozyApp() {
           action: 'join',
           invitationId: n.id,
           partnerName: n.name,
+          senderName: userName,
           type: 'activity',
           targetName: 'Watch Together',
           status: 'accepted'
@@ -951,6 +954,7 @@ export default function CozyApp() {
           action: 'join',
           invitationId: n.id,
           partnerName: n.name,
+          senderName: userName,
           type: 'activity',
           targetName: 'Listening Together',
           status: 'accepted'
@@ -971,6 +975,7 @@ export default function CozyApp() {
           action: 'join',
           invitationId: n.id,
           partnerName: n.name,
+          senderName: userName,
           type: 'photobooth',
           targetName: 'Photobooth',
           status: 'accepted'
@@ -2177,6 +2182,7 @@ export default function CozyApp() {
         {activeTab === 'music' && (
           <MusicView 
             userImage={userImage} 
+            userName={userName}
             onGoHome={() => setActiveTab('home')} 
             friendsList={friendsList}
             initialListeningWith={activeListeningFriend}
@@ -2376,6 +2382,7 @@ export default function CozyApp() {
         isOpen={isAddFriendModalOpen} 
         onClose={() => setIsAddFriendModalOpen(false)} 
         onAcceptFriend={handleAcceptFriendRequest}
+        currentUserName={userName}
       />
       
       <FriendProfileModal 

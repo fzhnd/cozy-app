@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
 
+import { ensureDatabaseTables } from "@/lib/dbInit";
+
 export async function PUT(req: Request) {
   try {
     const session = await getServerSession(authOptions);
@@ -17,13 +19,33 @@ export async function PUT(req: Request) {
       return NextResponse.json({ message: "Username cannot be empty" }, { status: 400 });
     }
 
+    await ensureDatabaseTables();
+
+    const email = session.user.email!.toLowerCase().trim();
+
     const updatedUser = await prisma.user.update({
-      where: { email: session.user.email! },
+      where: { email },
       data: {
         name,
         image,
       },
     });
+
+    // Also update any friendships records with new name and avatar
+    try {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Friendships" SET "user1Name" = $1, "user1Image" = COALESCE($2, "user1Image"), "updatedAt" = NOW() WHERE LOWER("user1Email") = $3;`,
+        name,
+        image,
+        email
+      );
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Friendships" SET "user2Name" = $1, "user2Image" = COALESCE($2, "user2Image"), "updatedAt" = NOW() WHERE LOWER("user2Email") = $3;`,
+        name,
+        image,
+        email
+      );
+    } catch (e) {}
 
     return NextResponse.json({ message: "Profile updated successfully", user: updatedUser }, { status: 200 });
   } catch (error: any) {

@@ -5,6 +5,8 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 
+import { ensureDatabaseTables } from "@/lib/dbInit";
+
 export const authOptions: AuthOptions = {
   adapter: PrismaAdapter(prisma) as any,
   providers: [
@@ -24,6 +26,8 @@ export const authOptions: AuthOptions = {
         }
 
         try {
+          await ensureDatabaseTables();
+
           const user = await prisma.user.findUnique({
             where: { email: credentials.email }
           });
@@ -69,6 +73,19 @@ export const authOptions: AuthOptions = {
       if (trigger === "update" && session) {
         token.name = session.name || token.name;
         token.picture = session.image || token.picture;
+      }
+      if (token.email) {
+        try {
+          await ensureDatabaseTables();
+          const dbUser = await prisma.user.findUnique({
+            where: { email: token.email },
+            select: { name: true, image: true }
+          });
+          if (dbUser) {
+            if (dbUser.name) token.name = dbUser.name;
+            if (dbUser.image) token.picture = dbUser.image;
+          }
+        } catch (e) {}
       }
       return token;
     },

@@ -10,13 +10,14 @@ import {
 
 interface MusicViewProps {
   userImage: string;
+  userName?: string;
   onGoHome?: () => void;
   friendsList?: any[];
   initialListeningWith?: any;
   onLeaveSession?: () => void;
 }
 
-export default function MusicView({ userImage, onGoHome, friendsList = [], initialListeningWith, onLeaveSession }: MusicViewProps) {
+export default function MusicView({ userImage, userName, onGoHome, friendsList = [], initialListeningWith, onLeaveSession }: MusicViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -63,6 +64,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
 
   const { data: session } = useSession();
   const userEmail = session?.user?.email?.toLowerCase() || null;
+  const currentUserName = userName || session?.user?.name || userEmail?.split('@')[0] || 'User';
 
   // Dynamic Data States (LocalStorage & DB Sync)
   const [likedSongs, setLikedSongs] = useState<any[]>([]);
@@ -165,10 +167,17 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
       fetch('/api/invitations', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'join', partnerName: initialListeningWith.name, type: 'activity' })
+        body: JSON.stringify({ 
+          action: 'join', 
+          partnerName: initialListeningWith.name, 
+          senderName: currentUserName,
+          type: 'activity',
+          targetName: 'Listening Together',
+          status: 'accepted'
+        })
       }).catch(e => {});
     }
-  }, [initialListeningWith]);
+  }, [initialListeningWith, currentUserName]);
   
   const handleAddFriendClick = (friend: any) => {
     setActiveFriend(friend);
@@ -180,6 +189,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friend.name,
+        senderName: currentUserName,
         type: 'activity',
         targetName: 'Listening Together'
       })
@@ -201,7 +211,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
     }
 
     const syncSession = () => {
-      fetch('/api/invitations')
+      fetch(`/api/invitations?username=${encodeURIComponent(currentUserName)}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success) return;
@@ -254,7 +264,7 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
     syncSession();
     const interval = setInterval(syncSession, 1000);
     return () => clearInterval(interval);
-  }, [userEmail, friendState, activeFriend, friendsList]);
+  }, [userEmail, currentUserName, friendState, activeFriend, friendsList]);
 
   // Player progress
   useEffect(() => {
@@ -1267,7 +1277,13 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
                   fetch('/api/invitations', {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: 'leave', partnerName: leavingPartner, type: 'activity' })
+                    body: JSON.stringify({ 
+                      action: wasWaiting ? 'end' : 'leave', 
+                      partnerName: leavingPartner, 
+                      senderName: currentUserName,
+                      type: 'activity',
+                      targetName: 'Listening Together'
+                    })
                   }).catch(e => {});
                   setToastMessage(wasWaiting ? "Invitation cancelled" : "Left the listening session");
                   setTimeout(() => setToastMessage(null), 3000);

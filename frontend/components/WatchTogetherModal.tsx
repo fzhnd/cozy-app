@@ -179,17 +179,24 @@ export default function WatchTogetherModal({
       fetch('/api/invitations', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'join', partnerName: initialFriend.name, type: 'activity', targetName: 'Watch Together' })
+        body: JSON.stringify({ 
+          action: 'join', 
+          partnerName: initialFriend.name, 
+          senderName: currentUser.name,
+          type: 'activity', 
+          targetName: 'Watch Together',
+          status: 'accepted'
+        })
       }).catch(e => {});
     }
-  }, [initialFriend]);
+  }, [initialFriend, currentUser.name]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
     if (!isOpen) return;
 
     const syncSession = () => {
-      fetch('/api/invitations')
+      fetch(`/api/invitations?username=${encodeURIComponent(currentUser.name)}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success) return;
@@ -289,6 +296,7 @@ export default function WatchTogetherModal({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friend.name,
+        senderName: currentUser.name,
         type: 'activity',
         targetName: 'Watch Together'
       })
@@ -311,6 +319,7 @@ export default function WatchTogetherModal({
       body: JSON.stringify({
         action: 'leave',
         partnerName: partner?.name,
+        senderName: currentUser.name,
         type: 'activity',
         targetName: 'Watch Together'
       })

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { ensureDatabaseTables } from "@/lib/dbInit";
 
 export async function GET(req: Request) {
   try {
@@ -12,6 +13,8 @@ export async function GET(req: Request) {
         { status: 400 }
       );
     }
+
+    await ensureDatabaseTables();
 
     // 1. Mockup users support (luna, jasper, mimi, pocha, leci)
     const DUMMY_USERS = ["luna", "jasper", "mimi", "pocha", "leci"];

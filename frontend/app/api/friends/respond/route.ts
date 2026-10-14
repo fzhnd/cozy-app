@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
+import { ensureDatabaseTables } from "@/lib/dbInit";
 
 export async function POST(req: Request) {
   try {
@@ -10,19 +11,35 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Not authenticated" }, { status: 401 });
     }
 
-    const { requestId, action } = await req.json();
+    const { requestId, action, username } = await req.json();
 
     if (!requestId || !action) {
       return NextResponse.json({ message: "Request ID and action ('accept' or 'reject') are required." }, { status: 400 });
     }
 
-    const myEmail = session.user.email.toLowerCase().trim();
+    await ensureDatabaseTables();
 
-    // Verify the request is addressed to the current logged-in user
+    const myEmail = session.user.email.toLowerCase().trim();
+    const dbSender = await prisma.user.findUnique({
+      where: { email: myEmail },
+      select: { name: true }
+    });
+    const myDbName = dbSender?.name?.toLowerCase().trim() || "";
+    const mySessionName = session.user.name?.toLowerCase().trim() || "";
+    const paramUsername = (username || '').toLowerCase().trim();
+    const myEmailPrefix = myEmail.split("@")[0];
+
+    const myNames = Array.from(new Set([myDbName, mySessionName, paramUsername, myEmailPrefix].filter(Boolean)));
+
+    // Verify the request is addressed to the current logged-in user (by email OR username)
     const rows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Friendships" WHERE "id" = $1 AND LOWER("user2Email") = $2 LIMIT 1;`,
+      `SELECT * FROM "Friendships" 
+       WHERE "id" = $1 
+         AND (LOWER("user2Email") = $2 OR LOWER("user2Name") = ANY($3::text[])) 
+       LIMIT 1;`,
       requestId,
-      myEmail
+      myEmail,
+      myNames
     );
 
     if (!rows || rows.length === 0) {
@@ -72,6 +89,6 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error("Respond friend request error:", error);
-    return NextResponse.json({ message: "Failed to respond to friend request", error: error.message }, { status: 500 });
+    return NextResponse.json({ message: "Failed to respond to friend request", error: error.message || String(error) }, { status: 500 });
   }
 }
