@@ -2574,21 +2574,14 @@ export default function CozyApp() {
                 {incomingInviteBanner.text}
               </p>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center">
                 <button
                   type="button"
                   onClick={handleBannerJoin}
-                  className="flex-1 bg-[#A577FF] hover:bg-[#9161eb] text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
+                  className="w-full bg-[#A577FF] hover:bg-[#9161eb] text-white text-xs font-bold py-2 px-3 rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
                 >
                   <Check size={14} className="stroke-[2.5]" />
                   <span>Join</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleBannerIgnore}
-                  className="bg-white/10 hover:bg-white/15 text-gray-300 hover:text-white text-xs font-semibold py-1.5 px-3 rounded-xl transition-all cursor-pointer active:scale-95"
-                >
-                  Ignore
                 </button>
               </div>
             </div>

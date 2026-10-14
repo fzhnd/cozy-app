@@ -156,6 +156,7 @@ export default function WatchTogetherModal({
   const isHostRef = useRef<boolean>(true);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
+  const lastPartnerNameRef = useRef<string | null>(null);
 
   // Keep host user entry synchronized with current logged-in user
   useEffect(() => {
@@ -241,6 +242,7 @@ export default function WatchTogetherModal({
   useEffect(() => {
     if (initialFriend) {
       isHostRef.current = false;
+      lastPartnerNameRef.current = initialFriend.name;
       setJoinedUsers(prev => {
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
           return [...prev, { name: initialFriend.name, avatar: initialFriend.avatar, status: 'joined' }];
@@ -288,6 +290,7 @@ export default function WatchTogetherModal({
 
             if (session.status === 'accepted') {
               // Both users connected!
+              lastPartnerNameRef.current = session.partnerName;
               setJoinedUsers(prev => {
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (!exists) {
@@ -307,9 +310,12 @@ export default function WatchTogetherModal({
               // Host is still in room, but guest left
               setJoinedUsers(prev => {
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
-                if (partnerUser && partnerUser.status === 'joined') {
-                  showLeaveToastOnce(`${session.partnerName} left Watch Together`);
-                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'pending' } : u);
+                if (partnerUser) {
+                  if (partnerUser.status === 'joined') {
+                    showLeaveToastOnce(`${session.partnerName} left Watch Together`);
+                  }
+                  // Remove partner completely from joinedUsers so partner's avatar does not remain
+                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
                 }
                 return prev;
               });
@@ -369,6 +375,7 @@ export default function WatchTogetherModal({
     setIsInviteOpen(false);
     
     isHostRef.current = true;
+    lastPartnerNameRef.current = friend.name;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
@@ -400,6 +407,7 @@ export default function WatchTogetherModal({
 
   const handleCloseModal = () => {
     const partner = joinedUsers.find(u => u.name !== currentUserName);
+    const partnerName = partner?.name || lastPartnerNameRef.current;
     const isHost = isHostRef.current || joinedUsers.some(u => u.name === currentUserName && u.isHost);
     lastLeaveToastTimeRef.current = Date.now();
     showToast("Left Watch Together", 3000);
@@ -409,14 +417,14 @@ export default function WatchTogetherModal({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: isHost ? 'end' : 'leave',
-        partnerName: partner?.name,
+        partnerName: partnerName || undefined,
         senderName: currentUserName,
         type: 'activity',
         targetName: 'Watch Together'
       })
     })
     .then(() => {
-      broadcastSync('SESSION_LEFT', { partnerName: partner?.name, target: 'Watch Together' });
+      broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together' });
     })
     .catch(e => {});
 

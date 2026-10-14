@@ -275,6 +275,7 @@ export default function PhotoboothView({
   const lastLeaveToastMsgRef = useRef<string>('');
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
+  const lastPartnerNameRef = useRef<string | null>(null);
 
   const showToast = useCallback((msg: string, duration = 3000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -326,6 +327,7 @@ export default function PhotoboothView({
   useEffect(() => {
     if (initialFriend) {
       isHostRef.current = false;
+      lastPartnerNameRef.current = initialFriend.name;
       setJoinedUsers(prev => {
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
           return [...prev, {
@@ -377,6 +379,7 @@ export default function PhotoboothView({
 
             if (session.status === 'accepted') {
               // Both users are joined!
+              lastPartnerNameRef.current = session.partnerName;
               setJoinedUsers(prev => {
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (!exists) {
@@ -396,9 +399,12 @@ export default function PhotoboothView({
               // Host is in session, but partner left
               setJoinedUsers(prev => {
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
-                if (partnerUser && partnerUser.status === 'joined') {
-                  showLeaveToastOnce(`${session.partnerName} left Photobooth`);
-                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'pending' } : u);
+                if (partnerUser) {
+                  if (partnerUser.status === 'joined') {
+                    showLeaveToastOnce(`${session.partnerName} left Photobooth`);
+                  }
+                  // Remove partner completely from joinedUsers so partner's avatar does not remain
+                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
                 }
                 return prev;
               });
@@ -429,6 +435,7 @@ export default function PhotoboothView({
     setIsInviteOpen(false);
 
     isHostRef.current = true;
+    lastPartnerNameRef.current = friend.name;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
@@ -460,6 +467,7 @@ export default function PhotoboothView({
 
   const handleExitPhotobooth = () => {
     const partner = joinedUsers.find(u => u.name !== userName);
+    const partnerName = partner?.name || lastPartnerNameRef.current;
     const isHost = isHostRef.current;
     lastLeaveToastTimeRef.current = Date.now();
     showToast("Left Photobooth", 3000);
@@ -469,14 +477,14 @@ export default function PhotoboothView({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: isHost ? 'end' : 'leave',
-        partnerName: partner?.name,
+        partnerName: partnerName || undefined,
         senderName: userName,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
     })
     .then(() => {
-      broadcastSync('SESSION_LEFT', { partnerName: partner?.name, target: 'Photobooth' });
+      broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Photobooth' });
     })
     .catch(e => {});
 

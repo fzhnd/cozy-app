@@ -304,7 +304,8 @@ export async function PATCH(req: Request) {
 
     const myNames = Array.from(new Set([myDbName, mySessionName, clientName, userEmailPrefix].filter(Boolean)));
     const target = (targetName || body.targetName || '').toLowerCase().trim();
-    const partner = (partnerName || body.partnerName || body.senderName || '').toLowerCase().trim();
+    const rawPartner = (partnerName || body.partnerName || '').toLowerCase().trim();
+    const partner = (rawPartner && !myNames.includes(rawPartner) && rawPartner !== userEmail) ? rawPartner : '';
 
     // 1. Participant Joins / Accepts
     if (action === 'join' || status === 'accepted') {
@@ -404,10 +405,16 @@ export async function PATCH(req: Request) {
         );
         
         if (isHost) {
-          // Host leaves: Whole session ends and invitation is marked expired
+          // Host leaves: Whole session ends and all matching invitations are marked expired immediately
           await prisma.$executeRawUnsafe(
-            `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = $1;`,
-            inv.id
+            `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+             WHERE (
+               LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+             )
+             AND "status" IN ('active', 'accepted')
+             ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''};`,
+            userEmail,
+            myNames
           );
           return NextResponse.json({ success: true, role: 'host', status: 'expired' }, { status: 200 });
         } else {
@@ -424,6 +431,8 @@ export async function PATCH(req: Request) {
     }
 
     // 3. Explicit Expire / Cancel (action === 'end' or status === 'expired')
+    const targetFilter = (target || type || '').toLowerCase().trim();
+
     if (invitationId) {
       await prisma.$executeRawUnsafe(
         `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = $1;`,
@@ -446,21 +455,25 @@ export async function PATCH(req: Request) {
            )
          )
          AND "status" IN ('active', 'accepted')
-         ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : `AND "type" = COALESCE($4, 'activity')`};`,
+         ${targetFilter ? `AND (LOWER("targetName") = '${targetFilter}' OR LOWER("type") = '${targetFilter}')` : ''};`,
         myNames,
         userEmail,
-        partner,
-        type || 'activity'
+        partner
       );
-    } else if (type) {
+    } else {
+      // Host ends session without a specific partner (or partner already left):
+      // Expire ALL active or accepted sessions for this target/type where current user is sender or receiver!
       await prisma.$executeRawUnsafe(
         `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
-         WHERE (LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[]))
-           AND "type" = $3
-           AND "status" IN ('active', 'accepted');`,
+         WHERE (
+           LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+           OR
+           LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
+         )
+         AND "status" IN ('active', 'accepted')
+         ${targetFilter ? `AND (LOWER("targetName") = '${targetFilter}' OR LOWER("type") = '${targetFilter}')` : ''};`,
         userEmail,
-        myNames,
-        type
+        myNames
       );
     }
 
