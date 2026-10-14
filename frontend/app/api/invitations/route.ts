@@ -236,7 +236,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { receiverName, receiverEmail, senderName: clientSenderName, type = 'activity', targetName, groupId, channelId } = body;
+    const { receiverName, receiverEmail, senderName: clientSenderName, senderImage: clientSenderImage, type = 'activity', targetName, groupId, channelId } = body;
 
     if (!receiverName && !receiverEmail) {
       return NextResponse.json({ message: "Receiver is required" }, { status: 400 });
@@ -254,7 +254,7 @@ export async function POST(req: Request) {
       select: { name: true, image: true }
     });
     const senderName = clientSenderName?.trim() || dbSender?.name?.trim() || session.user.name?.trim() || senderEmail.split('@')[0];
-    const senderImage = dbSender?.image || session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=A577FF`;
+    const senderImage = clientSenderImage || dbSender?.image || session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=A577FF`;
 
     // Attempt to resolve receiver email if not supplied
     let finalReceiverEmail = receiverEmail?.toLowerCase().trim() || '';
@@ -306,17 +306,7 @@ export async function POST(req: Request) {
     await prisma.$executeRawUnsafe(
       `INSERT INTO "Invitations" 
         ("id", "senderEmail", "senderName", "senderImage", "receiverEmail", "receiverName", "type", "targetName", "groupId", "channelId", "status", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'active', NOW(), NOW());`,
-      invId,
-      senderEmail,
-      senderName,
-      senderImage,
-      finalReceiverEmail,
-      finalReceiverName,
-      type,
-      targetName,
-      groupId || null,
-      channelId || null
+       VALUES ('${escapeSql(invId)}', '${safeSenderEmail}', '${escapeSql(senderName)}', '${escapeSql(senderImage)}', '${safeFinalRecEmail}', '${safeFinalRecName}', '${safeType}', '${safeTarget}', ${groupId ? `'${escapeSql(groupId)}'` : 'NULL'}, ${channelId ? `'${escapeSql(channelId)}'` : 'NULL'}, 'active', NOW(), NOW());`
     );
 
     const invData = {
@@ -345,6 +335,7 @@ export async function POST(req: Request) {
       type: 'INVITE_SENT',
       senderEmail,
       senderName,
+      senderAvatar: senderImage,
       receiverEmail: finalReceiverEmail,
       receiverName: finalReceiverName,
       target: targetName,

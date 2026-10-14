@@ -364,6 +364,7 @@ export default function PhotoboothView({
   broadcastSyncRef.current = broadcastSync;
   const hasExitedRef = useRef(false);
   const justJoinedTimeRef = useRef<number>(0);
+  const justInvitedTimeRef = useRef<number>(0);
 
   // Cleanup on unmount: if host, ensure the session is marked ended in the database
   useEffect(() => {
@@ -485,19 +486,20 @@ export default function PhotoboothView({
               });
             }
           } else {
-            // Grace period: If guest just joined via notification in the last 4 seconds, don't wipe them out while DB write commits!
-            if (Date.now() - justJoinedTimeRef.current < 4000) {
+            // Grace period: If guest just joined or host just invited in the last 6 seconds, don't wipe them out while DB write commits!
+            if (Date.now() - justJoinedTimeRef.current < 6000 || Date.now() - justInvitedTimeRef.current < 6000) {
               return;
             }
 
-            // Session expired or host ended
+            // Session expired or host ended: keep only host and any active pending invites!
             setJoinedUsers(prev => {
-              const otherUsers = prev.filter(u => u.name !== userName);
-              if (otherUsers.length > 0) {
+              const pendingUsers = prev.filter(u => u.status === 'pending');
+              const hostUser = prev.find(u => u.name === userName) || { name: userName, avatar: currentUserAvatar, status: 'joined' };
+              const otherJoined = prev.filter(u => u.name !== userName && u.status === 'joined');
+              if (otherJoined.length > 0) {
                 showLeaveToastOnce(`Photobooth session ended`);
-                return prev.filter(u => u.name === userName);
               }
-              return prev;
+              return [hostUser, ...pendingUsers];
             });
           }
         })
@@ -508,7 +510,7 @@ export default function PhotoboothView({
     syncSession();
     const interval = setInterval(syncSession, 800);
     return () => clearInterval(interval);
-  }, [userName, friendsList, showToast, showLeaveToastOnce]);
+  }, [userName, friendsList, showToast, showLeaveToastOnce, currentUserAvatar]);
 
   const handleInviteFriend = (friend: { name: string; avatar: string; email?: string }) => {
     if (joinedUsers.some(u => u.name.toLowerCase() === friend.name.toLowerCase())) return;
@@ -516,6 +518,7 @@ export default function PhotoboothView({
 
     isHostRef.current = true;
     hasExitedRef.current = false;
+    justInvitedTimeRef.current = Date.now();
     lastPartnerNameRef.current = friend.name;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
@@ -528,6 +531,7 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
+        senderImage: currentUserAvatar,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
@@ -538,6 +542,7 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
+        senderAvatar: currentUserAvatar,
         target: 'Photobooth',
         targetName: 'Photobooth',
         activity: 'Photobooth',

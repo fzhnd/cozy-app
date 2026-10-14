@@ -281,6 +281,7 @@ export default function WatchTogetherModal({
   broadcastSyncRef.current = broadcastSync;
   const hasExitedRef = useRef(false);
   const justJoinedTimeRef = useRef<number>(0);
+  const justInvitedTimeRef = useRef<number>(0);
 
   // Cleanup on unmount: if host, ensure the session is marked ended in the database
   useEffect(() => {
@@ -400,19 +401,20 @@ export default function WatchTogetherModal({
               });
             }
           } else {
-            // Grace period: If guest just joined via notification in the last 4 seconds, don't wipe them out while DB write commits!
-            if (Date.now() - justJoinedTimeRef.current < 4000) {
+            // Grace period: If guest just joined or host just invited in the last 6 seconds, don't wipe them out while DB write commits!
+            if (Date.now() - justJoinedTimeRef.current < 6000 || Date.now() - justInvitedTimeRef.current < 6000) {
               return;
             }
 
-            // Session expired or host ended
+            // Session expired or host ended: keep only host and any active pending invites!
             setJoinedUsers(prev => {
-              const otherUsers = prev.filter(u => u.name !== currentUserName);
-              if (otherUsers.length > 0) {
+              const pendingUsers = prev.filter(u => u.status === 'pending');
+              const hostUser = prev.find(u => u.name === currentUserName) || { name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: true };
+              const otherJoined = prev.filter(u => u.name !== currentUserName && u.status === 'joined');
+              if (otherJoined.length > 0) {
                 showLeaveToastOnce(`Watch Together session ended`);
-                return prev.filter(u => u.name === currentUserName);
               }
-              return prev;
+              return [hostUser, ...pendingUsers];
             });
           }
         })
@@ -423,7 +425,7 @@ export default function WatchTogetherModal({
     syncSession();
     const interval = setInterval(syncSession, 800);
     return () => clearInterval(interval);
-  }, [isOpen, currentUserName, friendsList, showToast, showLeaveToastOnce]);
+  }, [isOpen, currentUserName, currentUserAvatar, friendsList, showToast, showLeaveToastOnce]);
 
   // Combine real friends, room members & mock friends for invite list
   const availableFriends = React.useMemo(() => {
@@ -460,6 +462,7 @@ export default function WatchTogetherModal({
     
     isHostRef.current = true;
     hasExitedRef.current = false;
+    justInvitedTimeRef.current = Date.now();
     lastPartnerNameRef.current = friend.name;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
@@ -472,6 +475,7 @@ export default function WatchTogetherModal({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderImage: currentUserAvatar,
         type: 'activity',
         targetName: 'Watch Together'
       })
@@ -482,6 +486,7 @@ export default function WatchTogetherModal({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderAvatar: currentUserAvatar,
         target: 'Watch Together',
         targetName: 'Watch Together',
         activity: 'Watch Together',

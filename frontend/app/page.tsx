@@ -743,7 +743,7 @@ export default function CozyApp() {
   // Cross-tab and server-side real-time broadcast helper (broadcastLocalSync already manages BroadcastChannel + local listeners)
   const broadcastSync = (type: string, payload?: any) => {
     try {
-      broadcastLocalSync({ type, sender: userName, ...payload });
+      broadcastLocalSync({ type, sender: userName, senderName: userName, userName: userName, ...payload });
     } catch (e) {}
   };
 
@@ -880,7 +880,7 @@ export default function CozyApp() {
         if (isForMe) {
           const inv = data.invitation || {};
           const title = inv.game || inv.channel || inv.activity || inv.targetName || data.target || data.targetName || data.activity || 'Activity';
-          const inviteKey = inv.id || `${data.senderName}_${title}`;
+          const inviteKey = inv.id || `${data.senderName}_${title}_${data.timestamp || Date.now()}`;
 
           // If this invitation was already shown or dismissed, DO NOT POP UP AGAIN!
           if (shownBannerIdsRef.current.has(inviteKey)) {
@@ -888,7 +888,10 @@ export default function CozyApp() {
           }
           shownBannerIdsRef.current.add(inviteKey);
           knownInviteIdsRef.current.add(inviteKey);
-          if (inv.id) knownInviteIdsRef.current.add(inv.id);
+          if (inv.id) {
+            knownInviteIdsRef.current.add(inv.id);
+            shownBannerIdsRef.current.add(inv.id);
+          }
 
           const resolvedType = (inv.type || data.type || (title.toLowerCase().includes('photobooth') ? 'photobooth' : 'activity')).toLowerCase();
           const actionDesc = resolvedType === 'game_invite'
@@ -900,10 +903,10 @@ export default function CozyApp() {
                 : `invited you to ${title}`));
 
           const friend = friendsList.find(f => f.name.toLowerCase() === (data.senderName || inv.senderName)?.toLowerCase());
-          const bannerAvatar = inv.avatar || data.senderAvatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${data.senderName || 'user'}&backgroundColor=A577FF`;
+          const bannerAvatar = data.senderAvatar || inv.avatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${data.senderName || 'user'}&backgroundColor=A577FF`;
 
           const newInviteItem = {
-            id: inv.id || `inv_${Date.now()}`,
+            id: inv.id || inviteKey,
             type: resolvedType,
             name: data.senderName || inv.senderName || inv.name || 'Friend',
             seed: data.senderName || inv.senderName || 'Friend',
@@ -1183,7 +1186,12 @@ export default function CozyApp() {
       setIsPublicChannelsView(false);
     } else if (n.activity === 'Watch Together') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
-      setActiveWatchFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
+      const partnerAvatar = n.avatar || foundFriend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed || n.name}&backgroundColor=A577FF`;
+      setActiveWatchFriend({
+        ...(foundFriend || {}),
+        name: n.name,
+        avatar: partnerAvatar
+      });
       setIsWatchTogetherOpen(true);
 
       // Update invitation status to 'accepted' in Supabase PostgreSQL
@@ -1202,12 +1210,17 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Watch Together' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Watch Together' });
       })
       .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
-      setActiveListeningFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
+      const partnerAvatar = n.avatar || foundFriend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed || n.name}&backgroundColor=A577FF`;
+      setActiveListeningFriend({
+        ...(foundFriend || {}),
+        name: n.name,
+        avatar: partnerAvatar
+      });
       setActiveTab('music');
 
       // Update invitation status to 'accepted' in Supabase PostgreSQL
@@ -1226,12 +1239,17 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Listening Together' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Listening Together' });
       })
       .catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
-      setActivePhotoboothFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
+      const partnerAvatar = n.avatar || foundFriend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed || n.name}&backgroundColor=A577FF`;
+      setActivePhotoboothFriend({
+        ...(foundFriend || {}),
+        name: n.name,
+        avatar: partnerAvatar
+      });
       setActiveTab('photobooth');
 
       // Update invitation status to 'accepted' in Supabase PostgreSQL
@@ -1250,7 +1268,7 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Photobooth' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Photobooth' });
       })
       .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }

@@ -99,11 +99,9 @@ export default function MusicView({
   const currentUserName = userName || session?.user?.name || userEmail?.split('@')[0] || 'User';
 
   // Cross-tab and server-side real-time sync
-  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
-      broadcastLocalSync({ type, sender: currentUserName, ...payload });
-      broadcastChannelRef.current?.postMessage({ type, sender: currentUserName, ...payload });
+      broadcastLocalSync({ type, sender: currentUserName, senderName: currentUserName, userName: currentUserName, ...payload });
     } catch (e) {}
   }, [currentUserName]);
 
@@ -202,6 +200,7 @@ export default function MusicView({
   const isHostRef = useRef<boolean>(false);
   const syncSessionRef = useRef<(() => void) | null>(null);
   const justJoinedTimeRef = useRef<number>(0);
+  const justInvitedTimeRef = useRef<number>(0);
 
   // Setup SSE and cross-window sync for instant Listening Together session events (<10ms)
   useEffect(() => {
@@ -212,7 +211,7 @@ export default function MusicView({
 
       // 1. Friend joined Listening Together (<10ms)
       if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
-        const partnerName = data.senderName?.toLowerCase() === current ? data.partnerName : data.senderName;
+        const partnerName = (data.senderName || data.sender)?.toLowerCase() === current ? data.partnerName : (data.senderName || data.sender);
         if (partnerName && partnerName.toLowerCase() !== current) {
           const friend = friendsList?.find((f: any) => f.name.toLowerCase() === partnerName.toLowerCase());
           const resolvedAvatar = data.senderAvatar 
@@ -230,9 +229,10 @@ export default function MusicView({
 
       // 2. Friend left or Host ended Listening Together (<10ms)
       if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
-        const leaver = data.userName || data.senderName;
+        const leaver = data.userName || data.senderName || data.sender;
         if (data.action === 'end') {
           showLeaveToastOnce('Host ended the listening session');
+          hasExitedRef.current = true; // Protect from stale DB resurrection!
           setActiveFriend(null);
           setFriendState('none');
           isHostRef.current = false;
@@ -243,6 +243,7 @@ export default function MusicView({
             setActiveFriend(null);
             setFriendState('alone');
           } else {
+            hasExitedRef.current = true; // Protect from stale DB resurrection!
             setActiveFriend(null);
             setFriendState('none');
           }
@@ -264,18 +265,20 @@ export default function MusicView({
   broadcastSyncRef.current = broadcastSync;
   const hasExitedRef = useRef(false);
 
-  // Cleanup on unmount: if host, ensure the listening session is marked ended in the database
+  // Cleanup on unmount: ensure session leave or end is sent to the server & broadcast
   useEffect(() => {
     return () => {
-      if ((isHostRef.current || friendStateRef.current === 'waiting') && !hasExitedRef.current) {
+      if ((isHostRef.current || friendStateRef.current === 'waiting' || friendStateRef.current === 'joined') && !hasExitedRef.current) {
         hasExitedRef.current = true;
-        const partnerName = activeFriendRef.current?.name;
+        const partnerName = activeFriendRef.current?.name || lastPartnerNameRef.current;
+        const isHost = isHostRef.current || friendStateRef.current === 'waiting';
+        const actionType = isHost ? 'end' : 'leave';
         try {
           fetch('/api/invitations', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              action: 'end',
+              action: actionType,
               partnerName: partnerName || undefined,
               senderName: currentUserNameRef.current,
               type: 'activity',
@@ -286,7 +289,7 @@ export default function MusicView({
         } catch (e) {}
 
         try {
-          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together', action: 'end' });
+          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together', action: actionType });
         } catch (e) {}
       }
     };
@@ -311,6 +314,7 @@ export default function MusicView({
   const handleAddFriendClick = (friend: any) => {
     isHostRef.current = true;
     hasExitedRef.current = false;
+    justInvitedTimeRef.current = Date.now();
     setActiveFriend(friend);
     setFriendState('waiting');
 
@@ -322,6 +326,7 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderImage: userImage,
         type: 'activity',
         targetName: 'Listening Together'
       })
@@ -332,6 +337,7 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderAvatar: userImage,
         target: 'Listening Together',
         targetName: 'Listening Together',
         activity: 'Listening Together',
@@ -376,15 +382,21 @@ export default function MusicView({
             isHostRef.current = !!session.isHost;
 
             if (session.status === 'accepted') {
-              // Both users are joined!
-              if (friendStateRef.current !== 'joined') {
-                const partnerObj = friendsList.find(f => f.name.toLowerCase() === session.partnerName.toLowerCase()) || {
-                  name: session.partnerName,
-                  avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`
-                };
+              // Both users are joined! Always resolve partner's true avatar
+              const partnerObj = friendsList.find(f => f.name.toLowerCase() === session.partnerName.toLowerCase()) || {
+                name: session.partnerName,
+                avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`
+              };
+              if (
+                friendStateRef.current !== 'joined' ||
+                activeFriendRef.current?.avatar !== partnerObj.avatar ||
+                activeFriendRef.current?.name?.toLowerCase() !== session.partnerName.toLowerCase()
+              ) {
                 setActiveFriend(partnerObj);
-                setFriendState('joined');
-                showToast(`${session.partnerName} joined! Listening together`, 3000);
+                if (friendStateRef.current !== 'joined') {
+                  setFriendState('joined');
+                  showToast(`${session.partnerName} joined! Listening together`, 3000);
+                }
               }
             } else if (session.status === 'active') {
               // Session is active (host is in room, but partner has left or not joined yet)
@@ -399,14 +411,14 @@ export default function MusicView({
               }
             }
           } else {
-            // Grace period: If guest just joined via notification in the last 4 seconds, don't wipe them out while DB write commits!
-            if (Date.now() - justJoinedTimeRef.current < 4000) {
+            // Grace period: If guest just joined or host just invited in the last 6 seconds, don't wipe them out while DB write commits!
+            if (Date.now() - justJoinedTimeRef.current < 6000 || Date.now() - justInvitedTimeRef.current < 6000) {
               return;
             }
 
             // Case 2: No active session (host ended the session)
-            if (friendStateRef.current === 'joined' || friendStateRef.current === 'waiting' || friendStateRef.current === 'alone') {
-              const prevName = activeFriendRef.current?.name;
+            if (friendStateRef.current === 'joined' || friendStateRef.current === 'alone') {
+              const prevName = activeFriendRef.current?.name || lastPartnerNameRef.current;
               setFriendState('none');
               setActiveFriend(null);
               isHostRef.current = false;
