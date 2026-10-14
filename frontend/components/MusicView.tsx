@@ -7,6 +7,7 @@ import {
   ChevronLeft, ChevronDown, ChevronUp, ListPlus, Clock, X, Check, Trash2, LogOut,
   Camera, Edit2, Upload
 } from 'lucide-react';
+import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
 
 interface MusicViewProps {
   userImage: string;
@@ -56,7 +57,8 @@ export default function MusicView({
   const createPlaylistPhotoInputRef = useRef<HTMLInputElement>(null);
 
   // Right Sidebar State
-  const [friendState, setFriendState] = useState<'none' | 'selecting' | 'waiting' | 'joined'>('none');
+  const [friendState, setFriendState] = useState<'none' | 'selecting' | 'waiting' | 'joined' | 'alone'>('none');
+  const lastPartnerNameRef = useRef<string>('');
   
   // Dynamic Popup State
   const [addMusicType, setAddMusicType] = useState<'none' | 'queue' | 'playlist'>('none');
@@ -96,10 +98,11 @@ export default function MusicView({
   const userEmail = session?.user?.email?.toLowerCase() || null;
   const currentUserName = userName || session?.user?.name || userEmail?.split('@')[0] || 'User';
 
-  // Cross-tab real-time sync via BroadcastChannel
+  // Cross-tab and server-side real-time sync
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
+      broadcastLocalSync({ type, sender: currentUserName, ...payload });
       broadcastChannelRef.current?.postMessage({ type, sender: currentUserName, ...payload });
     } catch (e) {}
   }, [currentUserName]);
@@ -199,28 +202,59 @@ export default function MusicView({
   const isHostRef = useRef<boolean>(false);
   const syncSessionRef = useRef<(() => void) | null>(null);
 
-  // Setup BroadcastChannel listener for instant cross-tab sync
+  // Setup SSE and cross-window sync for instant Listening Together session events (<10ms)
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      const bc = new BroadcastChannel('cozy_realtime_sync');
-      broadcastChannelRef.current = bc;
-      bc.onmessage = (event) => {
-        const data = event.data;
-        if (!data) return;
-        if (
-          data.type === 'INVITE_SENT' || 
-          data.type === 'SESSION_JOINED' || 
-          data.type === 'SESSION_LEFT'
-        ) {
-          syncSessionRef.current?.();
+    const unsubscribe = subscribeRealtime((data: any) => {
+      if (!data) return;
+
+      const current = (currentUserName || '').toLowerCase().trim();
+
+      // 1. Friend joined Listening Together (<10ms)
+      if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
+        const partnerName = data.senderName?.toLowerCase() === current ? data.partnerName : data.senderName;
+        if (partnerName && partnerName.toLowerCase() !== current) {
+          const friend = friendsList?.find((f: any) => f.name.toLowerCase() === partnerName.toLowerCase());
+          const resolvedAvatar = data.senderAvatar 
+            || friend?.avatar 
+            || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
+            || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
+
+          lastPartnerNameRef.current = partnerName;
+          setActiveFriend({ name: partnerName, avatar: resolvedAvatar });
+          setFriendState('joined');
+          showToast(`${partnerName} joined! Listening together`, 3000);
         }
-      };
-      return () => {
-        bc.close();
-        broadcastChannelRef.current = null;
-      };
-    }
-  }, []);
+      }
+
+      // 2. Friend left or Host ended Listening Together (<10ms)
+      if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
+        const leaver = data.userName || data.senderName;
+        if (data.action === 'end') {
+          showLeaveToastOnce('Host ended the listening session');
+          setActiveFriend(null);
+          setFriendState('none');
+          isHostRef.current = false;
+        } else if (leaver && leaver.toLowerCase() !== current) {
+          showLeaveToastOnce(`${leaver} left the listening session`);
+          if (isHostRef.current) {
+            // Keep host session active so partner can rejoin, but remove partner's icon immediately!
+            setActiveFriend(null);
+            setFriendState('alone');
+          } else {
+            setActiveFriend(null);
+            setFriendState('none');
+          }
+        }
+      }
+
+      // Fallback DB sync
+      syncSessionRef.current?.();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [currentUserName, friendsList, showToast, showLeaveToastOnce]);
 
   const currentUserNameRef = useRef(currentUserName);
   currentUserNameRef.current = currentUserName;
@@ -347,28 +381,22 @@ export default function MusicView({
             } else if (session.status === 'active') {
               // Session is active (host is in room, but partner has left or not joined yet)
               if (session.isHost) {
-                const partnerObj = friendsList.find(f => f.name.toLowerCase() === session.partnerName.toLowerCase()) || {
-                  name: session.partnerName,
-                  avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`
-                };
                 if (friendStateRef.current === 'joined') {
-                  // Partner left! Transition back to waiting (pulsing ring), keep leave button visible!
+                  // Partner left! Transition to alone (no partner avatar, leave button remains)
                   const prevName = activeFriendRef.current?.name || session.partnerName;
-                  setActiveFriend(partnerObj);
-                  setFriendState('waiting');
+                  setActiveFriend(null);
+                  setFriendState('alone');
                   showLeaveToastOnce(`${prevName} left the listening session`);
-                } else if (friendStateRef.current === 'none') {
-                  setActiveFriend(partnerObj);
-                  setFriendState('waiting');
                 }
               }
             }
           } else {
             // Case 2: No active session (host ended the session)
-            if (friendStateRef.current === 'joined' || friendStateRef.current === 'waiting') {
+            if (friendStateRef.current === 'joined' || friendStateRef.current === 'waiting' || friendStateRef.current === 'alone') {
               const prevName = activeFriendRef.current?.name;
               setFriendState('none');
               setActiveFriend(null);
+              isHostRef.current = false;
               if (onLeaveSession) onLeaveSession();
               if (prevName) {
                 showLeaveToastOnce(`${prevName} ended the listening session`);
@@ -1385,14 +1413,15 @@ export default function MusicView({
         {/* === RIGHT COLUMN === */}
         <div className="w-80 flex flex-col border-l border-white/5 bg-white/[0.02] shrink-0">
           <div className="p-6 flex items-center justify-between border-b border-white/5 relative h-[89px]">
-            {(friendState === 'joined' || friendState === 'waiting') ? (
+            {(friendState === 'joined' || friendState === 'waiting' || friendState === 'alone') ? (
               <button 
                 onClick={() => { 
-                  const leavingPartner = activeFriend?.name;
+                  const leavingPartner = activeFriend?.name || lastPartnerNameRef.current;
                   const wasWaiting = friendState === 'waiting';
-                  const isHost = isHostRef.current || wasWaiting;
+                  const isHost = isHostRef.current || wasWaiting || friendState === 'alone';
                   setFriendState('none'); 
                   setActiveFriend(null);
+                  isHostRef.current = false;
                   if (onLeaveSession) onLeaveSession();
                   lastLeaveToastTimeRef.current = Date.now();
                   showToast(wasWaiting ? "Invitation cancelled" : "Left the listening session", 3000);
@@ -1409,7 +1438,7 @@ export default function MusicView({
                     keepalive: true
                   })
                   .then(() => {
-                    broadcastSync('SESSION_LEFT', { partnerName: leavingPartner, target: 'Listening Together' });
+                    broadcastSync('SESSION_LEFT', { partnerName: leavingPartner, target: 'Listening Together', action: isHost ? 'end' : 'leave' });
                   })
                   .catch(e => {});
                 }}
@@ -1423,10 +1452,11 @@ export default function MusicView({
             )}
             
             <div className="flex items-center">
-              {friendState === 'none' && (
+              {(friendState === 'none' || friendState === 'alone') && (
                 <button 
                   onClick={() => setFriendState('selecting')}
                   className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-white hover:bg-white/10 transition-colors mr-3"
+                  title="Invite Friend"
                 >
                   <UserPlus size={18} />
                 </button>

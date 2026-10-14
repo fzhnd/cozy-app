@@ -3,6 +3,7 @@ import {
   Search, X, Play, LogOut, UserPlus, 
   ExternalLink, Maximize2, Minimize2, Users, Check, Film, Sparkles, RefreshCw
 } from 'lucide-react';
+import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
 
 export interface WatchUser {
   name: string;
@@ -193,32 +194,68 @@ export default function WatchTogetherModal({
 
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
+      broadcastLocalSync({ type, sender: currentUserName, ...payload });
       broadcastChannelRef.current?.postMessage({ type, sender: currentUserName, ...payload });
     } catch (e) {}
   }, [currentUserName]);
 
-  // Setup BroadcastChannel for instant cross-tab sync
+  // Setup SSE and cross-window sync for instant Watch Together session events (<10ms)
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      const bc = new BroadcastChannel('cozy_realtime_sync');
-      broadcastChannelRef.current = bc;
-      bc.onmessage = (event) => {
-        const data = event.data;
-        if (!data) return;
-        if (
-          data.type === 'INVITE_SENT' || 
-          data.type === 'SESSION_JOINED' || 
-          data.type === 'SESSION_LEFT'
-        ) {
-          syncSessionRef.current?.();
+    if (!isOpen) return;
+
+    const unsubscribe = subscribeRealtime((data: any) => {
+      if (!data) return;
+
+      const current = (currentUserName || '').toLowerCase().trim();
+
+      // 1. Friend joined Watch Together (<10ms)
+      if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'watch together' || data.type === 'watch together')) {
+        const partnerName = data.senderName?.toLowerCase() === current ? data.partnerName : data.senderName;
+        if (partnerName && partnerName.toLowerCase() !== current) {
+          const friend = friendsList?.find((f: any) => f.name.toLowerCase() === partnerName.toLowerCase());
+          const resolvedAvatar = data.senderAvatar 
+            || friend?.avatar 
+            || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
+            || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
+
+          lastPartnerNameRef.current = partnerName;
+          setJoinedUsers(prev => {
+            const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
+            if (!exists) {
+              showToast(`${partnerName} joined Watch Together!`, 3000);
+              return [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined' }];
+            } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
+              showToast(`${partnerName} accepted! Joined Watch Together`, 3000);
+              return prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
+                ? { ...u, avatar: resolvedAvatar, status: 'joined' }
+                : u
+              );
+            }
+            return prev;
+          });
         }
-      };
-      return () => {
-        bc.close();
-        broadcastChannelRef.current = null;
-      };
-    }
-  }, []);
+      }
+
+      // 2. Friend left or Host ended Watch Together (<10ms)
+      if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'watch together' || data.type === 'watch together')) {
+        const leaver = data.userName || data.senderName;
+        if (data.action === 'end') {
+          showLeaveToastOnce('Watch Together session ended');
+          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
+        } else if (leaver && leaver.toLowerCase() !== current) {
+          showLeaveToastOnce(`${leaver} left Watch Together`);
+          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() !== leaver.toLowerCase()));
+        }
+      }
+
+      // Fallback DB sync
+      syncSessionRef.current?.();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [isOpen, currentUserName, friendsList, showToast, showLeaveToastOnce]);
 
   const [isLoadingSearch, setIsLoadingSearch] = useState(false);
   const [searchHeading, setSearchHeading] = useState<string>('Trending & Popular on YouTube');

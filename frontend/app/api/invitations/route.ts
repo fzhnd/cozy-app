@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
 import { ensureDatabaseTables } from "@/lib/dbInit";
+import { broadcastRealtime } from "@/lib/realtime";
 
 let lastExpiredCleanup = 0;
 const userNameCache = new Map<string, { name: string; expiry: number }>();
@@ -318,16 +319,43 @@ export async function POST(req: Request) {
       channelId || null
     );
 
+    const invData = {
+      id: invId,
+      senderEmail,
+      name: senderName,
+      seed: senderName,
+      avatar: senderImage,
+      receiverEmail: finalReceiverEmail,
+      receiverName: finalReceiverName,
+      type,
+      targetName,
+      game: type === 'game_invite' ? targetName : undefined,
+      activity: (type === 'activity' || type === 'photobooth') ? targetName : undefined,
+      channel: type === 'channel_invite' ? targetName : undefined,
+      groupName: type === 'group_invite' ? targetName : undefined,
+      groupId: groupId || null,
+      channelId: channelId || null,
+      status: 'active',
+      time: 'Just now',
+      read: false,
+      createdAt: new Date().toISOString()
+    };
+
+    broadcastRealtime({
+      type: 'INVITE_SENT',
+      senderEmail,
+      senderName,
+      receiverEmail: finalReceiverEmail,
+      receiverName: finalReceiverName,
+      target: targetName,
+      targetName,
+      activity: targetName,
+      invitation: invData
+    });
+
     return NextResponse.json({
       success: true,
-      invitation: {
-        id: invId,
-        senderName,
-        receiverName: finalReceiverName,
-        type,
-        targetName,
-        status: 'active'
-      }
+      invitation: invData
     }, { status: 201 });
 
   } catch (error: any) {
@@ -352,12 +380,13 @@ export async function PATCH(req: Request) {
     const userEmail = session.user.email.toLowerCase().trim();
     const dbSender = await prisma.user.findUnique({
       where: { email: userEmail },
-      select: { name: true }
+      select: { name: true, image: true }
     });
     const myDbName = dbSender?.name?.toLowerCase().trim() || "";
     const mySessionName = session.user.name?.toLowerCase().trim() || "";
     const clientName = clientSenderName?.toLowerCase().trim() || "";
     const userEmailPrefix = userEmail.split("@")[0];
+    const senderAvatar = dbSender?.image || session.user.image || null;
 
     const myNames = Array.from(new Set([myDbName, mySessionName, clientName, userEmailPrefix].filter(Boolean)));
     const target = (targetName || body.targetName || '').toLowerCase().trim();
@@ -405,6 +434,15 @@ export async function PATCH(req: Request) {
              AND "status" = 'active';`
         );
       }
+      broadcastRealtime({
+        type: 'SESSION_JOINED',
+        senderEmail: userEmail,
+        senderName: clientName || mySessionName || myDbName,
+        senderAvatar,
+        partnerName: partner,
+        target: target || type,
+        status: 'accepted'
+      });
       return NextResponse.json({ success: true, message: "Invitation joined/accepted" }, { status: 200 });
     }
 
@@ -430,6 +468,16 @@ export async function PATCH(req: Request) {
              AND (LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql}))
              AND ("type" = 'channel_invite' ${safeChannelId ? `OR "channelId" = '${safeChannelId}'` : ''} ${safeTarget ? `OR LOWER("targetName") = '${safeTarget}'` : ''});`
         );
+
+        broadcastRealtime({
+          type: 'SESSION_LEFT',
+          senderEmail: userEmail,
+          senderName: clientName || mySessionName || myDbName,
+          target: target || 'channel_invite',
+          channelId,
+          action: 'leave',
+          status: 'expired'
+        });
 
         return NextResponse.json({ success: true, message: "Left channel session" }, { status: 200 });
       }
@@ -465,6 +513,18 @@ export async function PATCH(req: Request) {
              AND "status" IN ('active', 'accepted')
              ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''};`
           );
+
+          broadcastRealtime({
+            type: 'SESSION_LEFT',
+            senderEmail: userEmail,
+            senderName: clientName || mySessionName || myDbName,
+            partnerName: partner || inv.receiverName,
+            target: target || inv.targetName,
+            action: 'end',
+            status: 'expired',
+            isHost: true
+          });
+
           return NextResponse.json({ success: true, role: 'host', status: 'expired' }, { status: 200 });
         } else {
           // Guest leaves: Host remains in session, invitation reverts to 'active'
@@ -472,6 +532,18 @@ export async function PATCH(req: Request) {
           await prisma.$executeRawUnsafe(
             `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW() WHERE "id" = '${escapeSql(inv.id)}';`
           );
+
+          broadcastRealtime({
+            type: 'SESSION_LEFT',
+            senderEmail: userEmail,
+            senderName: clientName || mySessionName || myDbName,
+            partnerName: partner || inv.senderName,
+            target: target || inv.targetName,
+            action: 'leave',
+            status: 'active',
+            isHost: false
+          });
+
           return NextResponse.json({ success: true, role: 'guest', status: 'active' }, { status: 200 });
         }
       }
@@ -519,6 +591,16 @@ export async function PATCH(req: Request) {
          ${safeTargetFilter ? `AND (LOWER("targetName") = '${safeTargetFilter}' OR LOWER("type") = '${safeTargetFilter}')` : ''};`
       );
     }
+
+    broadcastRealtime({
+      type: 'SESSION_LEFT',
+      senderEmail: userEmail,
+      senderName: clientName || mySessionName || myDbName,
+      partnerName: partner,
+      target: targetFilter,
+      action: 'end',
+      status: 'expired'
+    });
 
     return NextResponse.json({ success: true, message: `Invitations marked as expired` }, { status: 200 });
 

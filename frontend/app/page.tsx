@@ -18,6 +18,7 @@ import GroupView, { GroupData, GroupChannel, renderChannelIcon, getChannelIcon }
 import CreateGroupModal from '../components/CreateGroupModal';
 import WatchTogetherModal from '../components/WatchTogetherModal';
 import PhotoboothView from '../components/PhotoboothView';
+import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
 
 const HOME_TRACKS = [
   { id: 1, title: 'Midnight City', artist: 'M83', duration: 244, durationStr: '4:04' },
@@ -737,9 +738,10 @@ export default function CozyApp() {
   const isFirstFetchRef = useRef<boolean>(true);
   const bannerTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Cross-tab broadcast helper
+  // Cross-tab and server-side real-time broadcast helper
   const broadcastSync = (type: string, payload?: any) => {
     try {
+      broadcastLocalSync({ type, sender: userName, ...payload });
       if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
         const bc = new BroadcastChannel('cozy_realtime_sync');
         bc.postMessage({ type, sender: userName, ...payload });
@@ -847,26 +849,131 @@ export default function CozyApp() {
       .catch(err => console.error("Error fetching invitations:", err));
   };
 
-  // Listen for instant cross-tab real-time sync events
+  // Listen for instant SSE server push and cross-window real-time sync events
   React.useEffect(() => {
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      const bc = new BroadcastChannel('cozy_realtime_sync');
-      bc.onmessage = (event) => {
-        const data = event.data;
-        if (!data) return;
-        if (
-          data.type === 'INVITE_SENT' || 
-          data.type === 'SESSION_JOINED' || 
-          data.type === 'SESSION_LEFT'
-        ) {
+    const unsubscribe = subscribeRealtime((data: any) => {
+      if (!data) return;
+
+      const currentEmail = session?.user?.email?.toLowerCase().trim() || '';
+      const currentName = userName?.toLowerCase().trim() || '';
+
+      // 1. Instant Invite Received (<10ms)
+      if (data.type === 'INVITE_SENT') {
+        const recName = data.receiverName?.toLowerCase().trim();
+        const recEmail = data.receiverEmail?.toLowerCase().trim();
+        const isForMe = (recEmail && recEmail === currentEmail) || (recName && (recName === currentName || currentName.startsWith(recName)));
+
+        if (isForMe) {
+          const inv = data.invitation || {};
+          const title = inv.game || inv.channel || inv.activity || data.target || 'Activity';
+          const actionDesc = inv.type === 'game_invite'
+            ? `invited you to play ${title}`
+            : (inv.type === 'channel_invite'
+              ? `invited you to voice room: ${title}`
+              : `invited you to ${title}`);
+
+          const friend = friendsList.find(f => f.name.toLowerCase() === data.senderName?.toLowerCase());
+          const bannerAvatar = inv.avatar || data.senderAvatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${data.senderName}&backgroundColor=A577FF`;
+
+          const newInviteItem = {
+            id: inv.id || `inv_${Date.now()}`,
+            type: inv.type || 'activity',
+            name: data.senderName,
+            seed: data.senderName,
+            avatar: bannerAvatar,
+            game: inv.game,
+            activity: inv.activity,
+            channel: inv.channel,
+            channelId: inv.channelId,
+            groupId: inv.groupId,
+            groupName: inv.groupName,
+            text: actionDesc,
+            time: 'Just now',
+            read: false,
+            status: 'active',
+            isRealInvite: true
+          };
+
+          // Optimistically show popup banner in top right corner (0ms)!
+          setIncomingInviteBanner({
+            id: newInviteItem.id,
+            name: data.senderName,
+            avatar: bannerAvatar,
+            text: actionDesc,
+            title,
+            raw: newInviteItem
+          });
+
+          if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+          bannerTimerRef.current = setTimeout(() => {
+            setIncomingInviteBanner(null);
+          }, 12000);
+
+          // Optimistically prepend to notifications list (0ms)!
+          setNotifications(prev => [newInviteItem, ...prev.filter(p => p.id !== newInviteItem.id)]);
+
+          // Background sync
           refreshInvitations();
         }
-      };
-      return () => {
-        bc.close();
-      };
-    }
-  }, [userName, session?.user?.email]);
+      }
+
+      // 2. Instant Session Joined (<10ms)
+      if (data.type === 'SESSION_JOINED') {
+        const isRelated = 
+          (data.partnerName && data.partnerName.toLowerCase() === currentName) ||
+          (data.senderName && data.senderName.toLowerCase() === currentName) ||
+          (data.senderEmail && data.senderEmail.toLowerCase() === currentEmail);
+
+        if (isRelated || data.target) {
+          setNotifications(prev => prev.map(n => {
+            if (data.invitationId && n.id === data.invitationId) {
+              return { ...n, status: 'accepted' };
+            }
+            if (data.target && (n.game?.toLowerCase() === data.target.toLowerCase() || n.channel?.toLowerCase() === data.target.toLowerCase() || n.activity?.toLowerCase() === data.target.toLowerCase())) {
+              if (!data.partnerName || n.name?.toLowerCase() === data.partnerName.toLowerCase() || n.name?.toLowerCase() === data.senderName?.toLowerCase()) {
+                return { ...n, status: 'accepted' };
+              }
+            }
+            return n;
+          }));
+          refreshInvitations();
+        }
+      }
+
+      // 3. Instant Session Left / Expired (<10ms)
+      if (data.type === 'SESSION_LEFT') {
+        if (data.action === 'end') {
+          // Immediately mark matching notifications as expired (0ms)!
+          setNotifications(prev => prev.map(n => {
+            if (data.invitationId && n.id === data.invitationId) {
+              return { ...n, status: 'expired' };
+            }
+            const targetMatches = !data.target || (n.game?.toLowerCase() === data.target.toLowerCase() || n.channel?.toLowerCase() === data.target.toLowerCase() || n.activity?.toLowerCase() === data.target.toLowerCase());
+            const senderMatches = !data.senderName || n.name?.toLowerCase() === data.senderName.toLowerCase();
+            if (targetMatches && senderMatches) {
+              return { ...n, status: 'expired' };
+            }
+            return n;
+          }));
+
+          // Dismiss banner if it belongs to this ended session
+          setIncomingInviteBanner(prev => {
+            if (!prev) return null;
+            if (data.senderName && prev.name?.toLowerCase() === data.senderName.toLowerCase()) {
+              return null;
+            }
+            return prev;
+          });
+        }
+
+        refreshInvitations();
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [userName, session?.user?.email, friendsList]);
 
   React.useEffect(() => {
     if (!session?.user?.email) return;

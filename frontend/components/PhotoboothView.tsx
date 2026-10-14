@@ -4,6 +4,7 @@ import {
   Sparkles, Layout, Palette, Check, X, AlertCircle, Eye,
   LogOut, UserPlus, Users, ArrowUpDown, ArrowUp, ArrowDown
 } from 'lucide-react';
+import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
 
 interface PhotoboothPhoto {
   src: string;
@@ -296,32 +297,66 @@ export default function PhotoboothView({
 
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
+      broadcastLocalSync({ type, sender: userName, ...payload });
       broadcastChannelRef.current?.postMessage({ type, sender: userName, ...payload });
     } catch (e) {}
   }, [userName]);
 
-  // Setup BroadcastChannel for instant cross-tab sync
+  // Setup SSE and cross-window sync for instant Photobooth session events (<10ms)
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      const bc = new BroadcastChannel('cozy_realtime_sync');
-      broadcastChannelRef.current = bc;
-      bc.onmessage = (event) => {
-        const data = event.data;
-        if (!data) return;
-        if (
-          data.type === 'INVITE_SENT' || 
-          data.type === 'SESSION_JOINED' || 
-          data.type === 'SESSION_LEFT'
-        ) {
-          syncSessionRef.current?.();
+    const unsubscribe = subscribeRealtime((data: any) => {
+      if (!data) return;
+
+      const current = (userName || '').toLowerCase().trim();
+
+      // 1. Friend joined Photobooth (<10ms)
+      if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'photobooth' || data.type === 'photobooth')) {
+        const partnerName = data.senderName?.toLowerCase() === current ? data.partnerName : data.senderName;
+        if (partnerName && partnerName.toLowerCase() !== current) {
+          const friend = friendsList?.find(f => f.name.toLowerCase() === partnerName.toLowerCase());
+          const resolvedAvatar = data.senderAvatar 
+            || friend?.avatar 
+            || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
+            || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
+
+          lastPartnerNameRef.current = partnerName;
+          setJoinedUsers(prev => {
+            const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
+            if (!exists) {
+              showToast(`${partnerName} joined Photobooth!`, 3000);
+              return [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined' }];
+            } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
+              showToast(`${partnerName} accepted! Joined Photobooth`, 3000);
+              return prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
+                ? { ...u, avatar: resolvedAvatar, status: 'joined' }
+                : u
+              );
+            }
+            return prev;
+          });
         }
-      };
-      return () => {
-        bc.close();
-        broadcastChannelRef.current = null;
-      };
-    }
-  }, []);
+      }
+
+      // 2. Friend left or Host ended Photobooth (<10ms)
+      if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'photobooth' || data.type === 'photobooth')) {
+        const leaver = data.userName || data.senderName;
+        if (data.action === 'end') {
+          showLeaveToastOnce('Photobooth session ended');
+          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
+        } else if (leaver && leaver.toLowerCase() !== current) {
+          showLeaveToastOnce(`${leaver} left Photobooth`);
+          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() !== leaver.toLowerCase()));
+        }
+      }
+
+      // Fallback DB sync
+      syncSessionRef.current?.();
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [userName, friendsList, showToast, showLeaveToastOnce]);
 
   const userNameRef = useRef(userName);
   userNameRef.current = userName;
