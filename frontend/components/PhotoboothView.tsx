@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Camera, Upload, ChevronDown, RefreshCw, Download, 
   Sparkles, Layout, Palette, Check, X, AlertCircle, Eye,
@@ -18,9 +18,10 @@ interface PhotoboothViewProps {
   onGoHome: () => void;
   userName?: string;
   userImage?: string;
-  friendsList?: Array<{ name: string; avatar?: string; seed?: string; color?: string }>;
+  friendsList?: Array<{ name: string; avatar?: string; seed?: string; color?: string; email?: string }>;
   initialFriend?: any;
   onLeaveSession?: () => void;
+  onConsumeInitialFriend?: () => void;
 }
 
 // Collage Layout Options
@@ -85,7 +86,8 @@ export default function PhotoboothView({
   userImage,
   friendsList = [],
   initialFriend,
-  onLeaveSession
+  onLeaveSession,
+  onConsumeInitialFriend
 }: PhotoboothViewProps) {
   // Camera & Stream State
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -217,11 +219,12 @@ export default function PhotoboothView({
 
   // Available Friends for Invitation
   const availableFriends = React.useMemo(() => {
-    const list: Array<{ name: string; avatar: string }> = [];
+    const list: Array<{ name: string; avatar: string; email?: string }> = [];
     friendsList.forEach(f => {
       if (f.name !== userName && !list.some(item => item.name === f.name)) {
         list.push({
           name: f.name,
+          email: (f as any).email,
           avatar: f.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}`
         });
       }
@@ -251,6 +254,55 @@ export default function PhotoboothView({
   const isMyTurn = currentTurnUser.name === userName;
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastLeaveToastTimeRef = useRef<number>(0);
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const syncSessionRef = useRef<(() => void) | null>(null);
+
+  const showToast = useCallback((msg: string, duration = 3000) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToastMessage(msg);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, duration);
+  }, []);
+
+  const showLeaveToastOnce = useCallback((msg: string) => {
+    const now = Date.now();
+    if (now - lastLeaveToastTimeRef.current < 4000) return;
+    lastLeaveToastTimeRef.current = now;
+    showToast(msg, 3500);
+  }, [showToast]);
+
+  const broadcastSync = useCallback((type: string, payload?: any) => {
+    try {
+      broadcastChannelRef.current?.postMessage({ type, sender: userName, ...payload });
+    } catch (e) {}
+  }, [userName]);
+
+  // Setup BroadcastChannel for instant cross-tab sync
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('cozy_realtime_sync');
+      broadcastChannelRef.current = bc;
+      bc.onmessage = (event) => {
+        const data = event.data;
+        if (!data) return;
+        if (
+          data.type === 'INVITE_SENT' || 
+          data.type === 'SESSION_JOINED' || 
+          data.type === 'SESSION_LEFT'
+        ) {
+          syncSessionRef.current?.();
+        }
+      };
+      return () => {
+        bc.close();
+        broadcastChannelRef.current = null;
+      };
+    }
+  }, []);
 
   // Sync initialFriend if joining from notification
   useEffect(() => {
@@ -265,8 +317,7 @@ export default function PhotoboothView({
         }
         return prev;
       });
-      setToastMessage(`Joined Photobooth with ${initialFriend.name}`);
-      setTimeout(() => setToastMessage(null), 3000);
+      showToast(`Joined Photobooth with ${initialFriend.name}`, 3000);
 
       // Immediately inform database that we joined Photobooth
       fetch('/api/invitations', {
@@ -275,14 +326,22 @@ export default function PhotoboothView({
         body: JSON.stringify({ 
           action: 'join', 
           partnerName: initialFriend.name, 
-          senderName: userName,
+          senderName: userName, 
           type: 'photobooth', 
           targetName: 'Photobooth',
           status: 'accepted'
         })
-      }).catch(e => {});
+      })
+      .then(() => {
+        broadcastSync('SESSION_JOINED', { partnerName: initialFriend.name, target: 'Photobooth' });
+      })
+      .catch(e => {});
+
+      if (onConsumeInitialFriend) {
+        onConsumeInitialFriend();
+      }
     }
-  }, [initialFriend, userName]);
+  }, [initialFriend, userName, onConsumeInitialFriend, showToast, broadcastSync]);
 
   // Active Photobooth session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
@@ -300,16 +359,14 @@ export default function PhotoboothView({
               setJoinedUsers(prev => {
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (!exists) {
-                  setToastMessage(`${session.partnerName} joined Photobooth!`);
-                  setTimeout(() => setToastMessage(null), 3000);
+                  showToast(`${session.partnerName} joined Photobooth!`, 3000);
                   return [...prev, {
                     name: session.partnerName,
                     avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`,
                     status: 'joined'
                   }];
                 } else if (exists.status !== 'joined') {
-                  setToastMessage(`${session.partnerName} accepted! Joined Photobooth`);
-                  setTimeout(() => setToastMessage(null), 3000);
+                  showToast(`${session.partnerName} accepted! Joined Photobooth`, 3000);
                   return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'joined' } : u);
                 }
                 return prev;
@@ -319,8 +376,7 @@ export default function PhotoboothView({
               setJoinedUsers(prev => {
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (partnerUser && partnerUser.status === 'joined') {
-                  setToastMessage(`${session.partnerName} left Photobooth`);
-                  setTimeout(() => setToastMessage(null), 3000);
+                  showLeaveToastOnce(`${session.partnerName} left Photobooth`);
                   return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
                 }
                 return prev;
@@ -331,8 +387,7 @@ export default function PhotoboothView({
             setJoinedUsers(prev => {
               const otherUsers = prev.filter(u => u.name !== userName);
               if (otherUsers.length > 0) {
-                setToastMessage(`Photobooth session ended`);
-                setTimeout(() => setToastMessage(null), 3000);
+                showLeaveToastOnce(`Photobooth session ended`);
                 return prev.filter(u => u.name === userName);
               }
               return prev;
@@ -342,13 +397,14 @@ export default function PhotoboothView({
         .catch(err => console.error("Error syncing photobooth session:", err));
     };
 
+    syncSessionRef.current = syncSession;
     syncSession();
-    const interval = setInterval(syncSession, 1000);
+    const interval = setInterval(syncSession, 800);
     return () => clearInterval(interval);
-  }, [userName]);
+  }, [userName, showToast, showLeaveToastOnce]);
 
-  const handleInviteFriend = (friend: { name: string; avatar: string }) => {
-    if (joinedUsers.some(u => u.name === friend.name)) return;
+  const handleInviteFriend = (friend: { name: string; avatar: string; email?: string }) => {
+    if (joinedUsers.some(u => u.name.toLowerCase() === friend.name.toLowerCase())) return;
     setIsInviteOpen(false);
 
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
@@ -360,11 +416,16 @@ export default function PhotoboothView({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friend.name,
+        receiverEmail: friend.email,
         senderName: userName,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
-    }).catch(err => console.error("Error sending photobooth invitation:", err));
+    })
+    .then(() => {
+      broadcastSync('INVITE_SENT', { receiverName: friend.name, target: 'Photobooth' });
+    })
+    .catch(err => console.error("Error sending photobooth invitation:", err));
 
     // For built-in mock bots only
     const isMockBot = ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(friend.name) && !friendsList.some(f => f.name.toLowerCase() === friend.name.toLowerCase() && (f as any).isRealFriend);
@@ -377,6 +438,9 @@ export default function PhotoboothView({
 
   const handleExitPhotobooth = () => {
     const partner = joinedUsers.find(u => u.name !== userName);
+    lastLeaveToastTimeRef.current = Date.now();
+    showToast("Left Photobooth", 3000);
+
     fetch('/api/invitations', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -387,7 +451,11 @@ export default function PhotoboothView({
         type: 'photobooth',
         targetName: 'Photobooth'
       })
-    }).catch(e => {});
+    })
+    .then(() => {
+      broadcastSync('SESSION_LEFT', { partnerName: partner?.name, target: 'Photobooth' });
+    })
+    .catch(e => {});
 
     if (onLeaveSession) onLeaveSession();
     onGoHome();

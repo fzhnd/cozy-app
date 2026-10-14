@@ -108,6 +108,13 @@ export async function GET(req: Request) {
         row.senderEmail?.toLowerCase() === myEmail ||
         myNames.includes(row.senderName?.toLowerCase())
       );
+
+      // If the session is only 'active' (not 'accepted'), only the host is in the room.
+      // For the guest, it is merely a pending invitation, not an active joined session!
+      if (!isHost && row.status === 'active') {
+        return null;
+      }
+
       const partnerName = isHost ? row.receiverName : row.senderName;
       const partnerImage = isHost ? null : row.senderImage;
       return {
@@ -198,10 +205,15 @@ export async function POST(req: Request) {
       }
     }
 
-    // Expire any existing active invitations between these two users for the same type/target
+    // Expire any existing active or accepted invitations between these two users for the same type/target
     await prisma.$executeRawUnsafe(
       `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
-       WHERE "type" = $1 AND "targetName" = $2
+       WHERE (
+           LOWER("targetName") = LOWER($1)
+           OR LOWER("type") = LOWER($1)
+           OR LOWER("targetName") = LOWER($2)
+           OR LOWER("type") = LOWER($2)
+         )
          AND (
            (
              (LOWER("senderEmail") = $3 OR LOWER("senderName") = $4)

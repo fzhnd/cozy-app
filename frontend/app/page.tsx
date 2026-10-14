@@ -724,6 +724,17 @@ export default function CozyApp() {
   const [activePhotoboothFriend, setActivePhotoboothFriend] = useState<any>(null);
   const [toastNotification, setToastNotification] = useState<string | null>(null);
 
+  // Cross-tab broadcast helper
+  const broadcastSync = (type: string, payload?: any) => {
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('cozy_realtime_sync');
+        bc.postMessage({ type, sender: userName, ...payload });
+        bc.close();
+      }
+    } catch (e) {}
+  };
+
   // Poll invitations from Supabase PostgreSQL
   const refreshInvitations = () => {
     if (!session?.user?.email) return;
@@ -733,6 +744,7 @@ export default function CozyApp() {
       .then(res => {
         if (res.success && Array.isArray(res.invitations)) {
           setNotifications(prev => {
+            const prevReadMap = new Map(prev.map(p => [p.id, p.read]));
             const newRealInvites = res.invitations.map((inv: any) => ({
               id: inv.id,
               type: inv.type,
@@ -753,7 +765,7 @@ export default function CozyApp() {
                     ? 'invited you to join group' 
                     : 'invited you to')),
               time: inv.time || 'Just now',
-              read: inv.read || false,
+              read: prevReadMap.has(inv.id) ? prevReadMap.get(inv.id) : (inv.read || false),
               status: inv.status,
               isRealInvite: true
             }));
@@ -767,10 +779,31 @@ export default function CozyApp() {
       .catch(err => console.error("Error fetching invitations:", err));
   };
 
+  // Listen for instant cross-tab real-time sync events
+  React.useEffect(() => {
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('cozy_realtime_sync');
+      bc.onmessage = (event) => {
+        const data = event.data;
+        if (!data) return;
+        if (
+          data.type === 'INVITE_SENT' || 
+          data.type === 'SESSION_JOINED' || 
+          data.type === 'SESSION_LEFT'
+        ) {
+          refreshInvitations();
+        }
+      };
+      return () => {
+        bc.close();
+      };
+    }
+  }, [userName, session?.user?.email]);
+
   React.useEffect(() => {
     if (!session?.user?.email) return;
     refreshInvitations();
-    const interval = setInterval(refreshInvitations, 2000);
+    const interval = setInterval(refreshInvitations, 800);
     return () => clearInterval(interval);
   }, [session?.user?.email, userName]);
 
@@ -939,7 +972,10 @@ export default function CozyApp() {
           status: 'accepted'
         })
       })
-      .then(() => refreshInvitations())
+      .then(() => {
+        refreshInvitations();
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Watch Together' });
+      })
       .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
@@ -960,7 +996,10 @@ export default function CozyApp() {
           status: 'accepted'
         })
       })
-      .then(() => refreshInvitations())
+      .then(() => {
+        refreshInvitations();
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Listening Together' });
+      })
       .catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
@@ -981,7 +1020,10 @@ export default function CozyApp() {
           status: 'accepted'
         })
       })
-      .then(() => refreshInvitations())
+      .then(() => {
+        refreshInvitations();
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Photobooth' });
+      })
       .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }
   };
@@ -1327,9 +1369,18 @@ export default function CozyApp() {
                                   setActiveTab('chat');
                                 }, 'Please log in or sign up first to start a conversation.');
                               } else if (item.type === 'activity') {
-                                if (item.name === 'Photobooth') setActiveTab('photobooth');
-                                if (item.name === 'Watch Together') setIsWatchTogetherOpen(true);
-                                if (item.name === 'Listening Together') setActiveTab('music');
+                                if (item.name === 'Photobooth') {
+                                  setActivePhotoboothFriend(null);
+                                  setActiveTab('photobooth');
+                                }
+                                if (item.name === 'Watch Together') {
+                                  setActiveWatchFriend(null);
+                                  setIsWatchTogetherOpen(true);
+                                }
+                                if (item.name === 'Listening Together') {
+                                  setActiveListeningFriend(null);
+                                  setActiveTab('music');
+                                }
                               }
                             }}
                             className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
@@ -1624,12 +1675,15 @@ export default function CozyApp() {
                     key={i} 
                     onClick={() => {
                       if (game.name === 'Listening Together') {
+                        setActiveListeningFriend(null);
                         requireAuth(() => setActiveTab('music'), 'Please log in or sign up first to enjoy Listening Together.');
                       }
                       if (game.name === 'Watch Together') {
+                        setActiveWatchFriend(null);
                         requireAuth(() => setIsWatchTogetherOpen(true), 'Please log in or sign up first to watch YouTube together in Watch Together.');
                       }
                       if (game.name === 'Photobooth') {
+                        setActivePhotoboothFriend(null);
                         requireAuth(() => setActiveTab('photobooth'), 'Please log in or sign up first to use Photobooth.');
                       }
                     }}
@@ -2198,6 +2252,7 @@ export default function CozyApp() {
             userImage={userImage} 
             friendsList={friendsList}
             initialFriend={activePhotoboothFriend}
+            onConsumeInitialFriend={() => setActivePhotoboothFriend(null)}
             onLeaveSession={() => setActivePhotoboothFriend(null)}
           />
         )}
@@ -2411,7 +2466,7 @@ export default function CozyApp() {
         friendsList={friendsList}
         initialFriend={activeWatchFriend}
         onLeaveSession={() => setActiveWatchFriend(null)}
-        roomMembers={friendsList.map(f => ({ name: f.name, avatar: (f as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}` }))}
+        roomMembers={[]}
       />
 
       {/* Toast Notification for Expired/Active session info */}
