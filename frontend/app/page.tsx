@@ -865,24 +865,28 @@ export default function CozyApp() {
 
         if (isForMe) {
           const inv = data.invitation || {};
-          const title = inv.game || inv.channel || inv.activity || data.target || 'Activity';
-          const actionDesc = inv.type === 'game_invite'
+          const title = inv.game || inv.channel || inv.activity || inv.targetName || data.target || data.targetName || data.activity || 'Activity';
+          const resolvedType = (inv.type || data.type || (title.toLowerCase().includes('photobooth') ? 'photobooth' : 'activity')).toLowerCase();
+          const actionDesc = resolvedType === 'game_invite'
             ? `invited you to play ${title}`
-            : (inv.type === 'channel_invite'
+            : (resolvedType === 'channel_invite'
               ? `invited you to voice room: ${title}`
-              : `invited you to ${title}`);
+              : (resolvedType === 'group_invite'
+                ? `invited you to join group`
+                : `invited you to ${title}`));
 
-          const friend = friendsList.find(f => f.name.toLowerCase() === data.senderName?.toLowerCase());
-          const bannerAvatar = inv.avatar || data.senderAvatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${data.senderName}&backgroundColor=A577FF`;
+          const friend = friendsList.find(f => f.name.toLowerCase() === (data.senderName || inv.senderName)?.toLowerCase());
+          const bannerAvatar = inv.avatar || data.senderAvatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${data.senderName || 'user'}&backgroundColor=A577FF`;
 
           const newInviteItem = {
             id: inv.id || `inv_${Date.now()}`,
-            type: inv.type || 'activity',
-            name: data.senderName,
-            seed: data.senderName,
+            type: resolvedType,
+            name: data.senderName || inv.senderName || inv.name || 'Friend',
+            seed: data.senderName || inv.senderName || 'Friend',
             avatar: bannerAvatar,
             game: inv.game,
-            activity: inv.activity,
+            activity: inv.activity || title,
+            targetName: title,
             channel: inv.channel,
             channelId: inv.channelId,
             groupId: inv.groupId,
@@ -897,7 +901,7 @@ export default function CozyApp() {
           // Optimistically show popup banner in top right corner (0ms)!
           setIncomingInviteBanner({
             id: newInviteItem.id,
-            name: data.senderName,
+            name: newInviteItem.name,
             avatar: bannerAvatar,
             text: actionDesc,
             title,
@@ -944,14 +948,20 @@ export default function CozyApp() {
       if (data.type === 'SESSION_LEFT') {
         if (data.action === 'end') {
           // Immediately mark matching notifications as expired (0ms)!
+          const dataTarget = (data.target || data.targetName || '').toLowerCase().trim();
+          const dataSender = (data.senderName || '').toLowerCase().trim();
+
           setNotifications(prev => prev.map(n => {
             if (data.invitationId && n.id === data.invitationId) {
               return { ...n, status: 'expired' };
             }
-            const targetMatches = !data.target || (n.game?.toLowerCase() === data.target.toLowerCase() || n.channel?.toLowerCase() === data.target.toLowerCase() || n.activity?.toLowerCase() === data.target.toLowerCase());
-            const senderMatches = !data.senderName || n.name?.toLowerCase() === data.senderName.toLowerCase();
-            if (targetMatches && senderMatches) {
-              return { ...n, status: 'expired' };
+            if (dataTarget && dataSender) {
+              const nTarget = (n.activity || n.targetName || n.game || n.channel || n.type || '').toLowerCase().trim();
+              const targetMatches = nTarget === dataTarget || nTarget.includes(dataTarget) || dataTarget.includes(nTarget);
+              const senderMatches = n.name?.toLowerCase() === dataSender;
+              if (targetMatches && senderMatches) {
+                return { ...n, status: 'expired' };
+              }
             }
             return n;
           }));
@@ -959,7 +969,7 @@ export default function CozyApp() {
           // Dismiss banner if it belongs to this ended session
           setIncomingInviteBanner(prev => {
             if (!prev) return null;
-            if (data.senderName && prev.name?.toLowerCase() === data.senderName.toLowerCase()) {
+            if (dataSender && prev.name?.toLowerCase() === dataSender) {
               return null;
             }
             return prev;
@@ -984,66 +994,69 @@ export default function CozyApp() {
 
   // Determine whether an invitation is actively joinable or expired
   const checkInviteStatus = (n: any) => {
+    if (!n) return { isLive: false, buttonText: 'Expired' };
     if (n.status === 'expired') {
       return { isLive: false, buttonText: 'Expired' };
     }
 
-    const friend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+    const friend = friendsList.find(f => f.name?.toLowerCase() === n.name?.toLowerCase());
+    const inviteType = (n.type || '').toLowerCase();
+    const activityName = (n.activity || n.targetName || n.game || n.channel || '').toLowerCase();
 
     // 1. Game Invite: Friend must still be in game with matching game
-    if (n.type === 'game_invite') {
+    if (inviteType === 'game_invite' || n.game) {
       const isInGame = friend?.label === 'In Game' || friend?.status === 'bg-red-500';
       const isSameGame = !n.game || (friend?.gameName?.toLowerCase() === n.game.toLowerCase());
-      if (isInGame && isSameGame) {
+      if (isInGame && isSameGame && n.status !== 'expired') {
         return { isLive: true, buttonText: 'Join Game' };
       }
       return { isLive: false, buttonText: 'Expired' };
     }
 
     // 2. Channel/Voice Room Invite:
-    if (n.type === 'channel_invite') {
-      // As long as host has not expired the channel session, guest can join or re-join anytime
+    if (inviteType === 'channel_invite' || n.channel) {
       if (n.status === 'active' || n.status === 'accepted') {
         return { isLive: true, buttonText: 'Join Room' };
       }
       return { isLive: false, buttonText: 'Expired' };
     }
 
-    // 3. Group Invite: Group exists and active
-    if (n.type === 'group_invite') {
+    // 3. Group Invite:
+    if (inviteType === 'group_invite' || n.groupName) {
       const groupExists = !n.groupId || groups.some(g => g.id === n.groupId || g.name.toLowerCase() === (n.groupName || '').toLowerCase());
-      if (groupExists && n.status === 'active') {
+      if (groupExists && (n.status === 'active' || n.status === 'accepted')) {
         return { isLive: true, buttonText: 'Join Group' };
       }
       return { isLive: false, buttonText: 'Expired' };
     }
 
-    // 4. Activity (Watch Together or Listening Together)
-    if (n.type === 'activity') {
-      if (n.activity === 'Watch Together') {
-        // As long as host has not expired the session, guest can join or re-join anytime
-        if (n.status === 'active' || n.status === 'accepted') {
-          return { isLive: true, buttonText: 'Join Activity' };
-        }
-        return { isLive: false, buttonText: 'Expired' };
-      }
-
-      if (n.activity === 'Listening Together') {
-        // As long as host has not expired the session, guest can join or re-join anytime
-        if (n.status === 'active' || n.status === 'accepted') {
-          return { isLive: true, buttonText: 'Join Activity' };
-        }
-        return { isLive: false, buttonText: 'Expired' };
-      }
-    }
-
-    // 5. Photobooth
-    if (n.type === 'photobooth' || n.activity === 'Photobooth') {
-      // As long as host has not expired the session, guest can join or re-join anytime
+    // 4. Photobooth
+    if (inviteType === 'photobooth' || activityName.includes('photobooth')) {
       if (n.status === 'active' || n.status === 'accepted') {
         return { isLive: true, buttonText: 'Join Photobooth' };
       }
       return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // 5. Watch Together
+    if (activityName.includes('watch') || (activityName.includes('together') && !activityName.includes('listening'))) {
+      if (n.status === 'active' || n.status === 'accepted') {
+        return { isLive: true, buttonText: 'Join Activity' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // 6. Listening Together
+    if (activityName.includes('listening') || activityName.includes('music')) {
+      if (n.status === 'active' || n.status === 'accepted') {
+        return { isLive: true, buttonText: 'Join Activity' };
+      }
+      return { isLive: false, buttonText: 'Expired' };
+    }
+
+    // Fallback: If status is active or accepted, it IS live!
+    if (n.status === 'active' || n.status === 'accepted') {
+      return { isLive: true, buttonText: 'Join' };
     }
 
     return { isLive: false, buttonText: 'Expired' };

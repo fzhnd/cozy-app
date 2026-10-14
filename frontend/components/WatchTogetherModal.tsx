@@ -279,11 +279,13 @@ export default function WatchTogetherModal({
   currentUserNameRef.current = currentUserName;
   const broadcastSyncRef = useRef(broadcastSync);
   broadcastSyncRef.current = broadcastSync;
+  const hasExitedRef = useRef(false);
 
   // Cleanup on unmount: if host, ensure the session is marked ended in the database
   useEffect(() => {
     return () => {
-      if (isHostRef.current) {
+      if (isHostRef.current && !hasExitedRef.current) {
+        hasExitedRef.current = true;
         const partnerName = lastPartnerNameRef.current;
         try {
           fetch('/api/invitations', {
@@ -301,7 +303,7 @@ export default function WatchTogetherModal({
         } catch (e) {}
 
         try {
-          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together' });
+          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together', action: 'end' });
         } catch (e) {}
       }
     };
@@ -397,16 +399,16 @@ export default function WatchTogetherModal({
                 return prev;
               });
             } else if (session.status === 'active') {
-              // Host is still in room, but guest left
+              // Host is still in room. If partner was joined, guest left.
+              // If partner is pending, host is waiting for partner (keep pending!).
               setJoinedUsers(prev => {
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
-                if (partnerUser) {
-                  if (partnerUser.status === 'joined') {
-                    showLeaveToastOnce(`${session.partnerName} left Watch Together`);
-                  }
+                if (partnerUser && partnerUser.status === 'joined') {
+                  showLeaveToastOnce(`${session.partnerName} left Watch Together`);
                   // Remove partner completely from joinedUsers so partner's avatar does not remain
                   return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
                 }
+                // If partnerUser is 'pending', keep them! Host is waiting for them to accept.
                 return prev;
               });
             }
@@ -481,8 +483,18 @@ export default function WatchTogetherModal({
         targetName: 'Watch Together'
       })
     })
-    .then(() => {
-      broadcastSync('INVITE_SENT', { receiverName: friend.name, target: 'Watch Together' });
+    .then(res => res.json())
+    .then((data) => {
+      broadcastSync('INVITE_SENT', {
+        receiverName: friend.name,
+        receiverEmail: friend.email,
+        senderName: currentUserName,
+        target: 'Watch Together',
+        targetName: 'Watch Together',
+        activity: 'Watch Together',
+        type: 'activity',
+        invitation: data?.invitation
+      });
     })
     .catch(err => console.error("Error sending watch invitation:", err));
 
@@ -496,6 +508,7 @@ export default function WatchTogetherModal({
   };
 
   const handleCloseModal = () => {
+    hasExitedRef.current = true;
     const partner = joinedUsers.find(u => u.name !== currentUserName);
     const partnerName = partner?.name || lastPartnerNameRef.current;
     const isHost = isHostRef.current || joinedUsers.some(u => u.name === currentUserName && u.isHost);
@@ -515,7 +528,7 @@ export default function WatchTogetherModal({
       keepalive: true
     })
     .then(() => {
-      broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together' });
+      broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together', action: isHost ? 'end' : 'leave' });
     })
     .catch(e => {});
 

@@ -260,11 +260,13 @@ export default function MusicView({
   currentUserNameRef.current = currentUserName;
   const broadcastSyncRef = useRef(broadcastSync);
   broadcastSyncRef.current = broadcastSync;
+  const hasExitedRef = useRef(false);
 
   // Cleanup on unmount: if host, ensure the listening session is marked ended in the database
   useEffect(() => {
     return () => {
-      if (isHostRef.current || friendStateRef.current === 'waiting') {
+      if ((isHostRef.current || friendStateRef.current === 'waiting') && !hasExitedRef.current) {
+        hasExitedRef.current = true;
         const partnerName = activeFriendRef.current?.name;
         try {
           fetch('/api/invitations', {
@@ -282,7 +284,7 @@ export default function MusicView({
         } catch (e) {}
 
         try {
-          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together' });
+          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together', action: 'end' });
         } catch (e) {}
       }
     };
@@ -336,8 +338,18 @@ export default function MusicView({
         targetName: 'Listening Together'
       })
     })
-    .then(() => {
-      broadcastSync('INVITE_SENT', { receiverName: friend.name, target: 'Listening Together' });
+    .then(res => res.json())
+    .then((data) => {
+      broadcastSync('INVITE_SENT', {
+        receiverName: friend.name,
+        receiverEmail: friend.email,
+        senderName: currentUserName,
+        target: 'Listening Together',
+        targetName: 'Listening Together',
+        activity: 'Listening Together',
+        type: 'activity',
+        invitation: data?.invitation
+      });
     })
     .catch(err => console.error("Error sending listening invite:", err));
   };
@@ -1416,6 +1428,7 @@ export default function MusicView({
             {(friendState === 'joined' || friendState === 'waiting' || friendState === 'alone') ? (
               <button 
                 onClick={() => { 
+                  hasExitedRef.current = true;
                   const leavingPartner = activeFriend?.name || lastPartnerNameRef.current;
                   const wasWaiting = friendState === 'waiting';
                   const isHost = isHostRef.current || wasWaiting || friendState === 'alone';
