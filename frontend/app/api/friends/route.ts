@@ -18,6 +18,7 @@ async function ensureFriendshipsTable() {
       "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
       "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE IF EXISTS "Friendships" ENABLE ROW LEVEL SECURITY;
   `);
 }
 

@@ -12,6 +12,7 @@ async function ensureSyncTable() {
       "data" JSONB NOT NULL,
       "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE IF EXISTS "UserSyncData" ENABLE ROW LEVEL SECURITY;
   `);
 }
 

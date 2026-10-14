@@ -21,6 +21,7 @@ async function ensureInvitationsTable() {
       "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
       "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE IF EXISTS "Invitations" ENABLE ROW LEVEL SECURITY;
   `);
 }
 
@@ -97,7 +98,55 @@ export async function GET() {
       createdAt: r.createdAt
     }));
 
-    return NextResponse.json({ success: true, invitations, sentInvitations }, { status: 200 });
+    // Fetch all active sessions (listening together, watch together, photobooth)
+    const activeActivityRows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM "Invitations" 
+       WHERE "status" IN ('active', 'accepted')
+         AND (LOWER("senderEmail") = $1 OR LOWER("senderName") = $2 
+              OR LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
+       ORDER BY "updatedAt" DESC LIMIT 30;`,
+      myEmail,
+      myName
+    );
+
+    const formatSession = (row: any) => {
+      if (!row) return null;
+      const isHost = (row.senderEmail?.toLowerCase() === myEmail || row.senderName?.toLowerCase() === myName);
+      const partnerName = isHost ? row.receiverName : row.senderName;
+      const partnerImage = isHost ? null : row.senderImage;
+      return {
+        id: row.id,
+        isHost,
+        senderName: row.senderName,
+        senderImage: row.senderImage,
+        receiverName: row.receiverName,
+        partnerName,
+        partnerImage,
+        type: row.type,
+        targetName: row.targetName,
+        status: row.status,
+        updatedAt: row.updatedAt
+      };
+    };
+
+    const activeListeningSession = formatSession(
+      activeActivityRows.find(r => r.targetName?.toLowerCase() === 'listening together')
+    );
+    const activeWatchSession = formatSession(
+      activeActivityRows.find(r => r.targetName?.toLowerCase() === 'watch together')
+    );
+    const activePhotoboothSession = formatSession(
+      activeActivityRows.find(r => r.targetName?.toLowerCase() === 'photobooth' || r.type?.toLowerCase() === 'photobooth')
+    );
+
+    return NextResponse.json({ 
+      success: true, 
+      invitations, 
+      sentInvitations, 
+      activeListeningSession,
+      activeWatchSession,
+      activePhotoboothSession
+    }, { status: 200 });
   } catch (error: any) {
     console.error("GET Invitations error:", error);
     return NextResponse.json({ success: false, invitations: [], sentInvitations: [], error: error.message }, { status: 500 });
@@ -140,6 +189,21 @@ export async function POST(req: Request) {
       if (dbUser?.email) finalReceiverEmail = dbUser.email.toLowerCase();
     }
 
+    // Expire any existing active invitations between these two users for the same type/target
+    await prisma.$executeRawUnsafe(
+      `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+       WHERE "type" = $1 AND "targetName" = $2
+         AND ((LOWER("senderEmail") = $3 AND (LOWER("receiverName") = $4 OR LOWER("receiverEmail") = $5))
+              OR (LOWER("senderName") = $6 AND (LOWER("receiverName") = $4 OR LOWER("receiverEmail") = $5)))
+         AND "status" IN ('active', 'accepted');`,
+      type,
+      targetName,
+      senderEmail,
+      finalReceiverName.toLowerCase(),
+      finalReceiverEmail.toLowerCase(),
+      senderName.toLowerCase()
+    );
+
     const invId = `inv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
     await prisma.$executeRawUnsafe(
@@ -176,7 +240,7 @@ export async function POST(req: Request) {
   }
 }
 
-// PATCH: End or expire an invitation (e.g. sender left session or room closed)
+// PATCH: Join, Leave, or Expire an invitation/session
 export async function PATCH(req: Request) {
   try {
     const session = await getServerSession(authOptions);
@@ -185,57 +249,155 @@ export async function PATCH(req: Request) {
     }
 
     const body = await req.json();
-    const { invitationId, type, status = 'expired' } = body;
+    const { invitationId, type, targetName, status, action, partnerName } = body;
 
     await ensureInvitationsTable();
 
     const userEmail = session.user.email.toLowerCase().trim();
     const userName = (session.user.name || userEmail.split("@")[0]).toLowerCase().trim();
+    const target = (targetName || body.targetName || '').toLowerCase().trim();
 
-    if (invitationId) {
-      await prisma.$executeRawUnsafe(
-        `UPDATE "Invitations" SET "status" = $1, "updatedAt" = NOW() WHERE "id" = $2;`,
-        status,
-        invitationId
-      );
-    } else if (status === 'accepted') {
-      // Receiver accepting an invitation
-      const targetSender = (body.senderName || '').toLowerCase().trim();
-      const targetType = body.type || 'activity';
-      if (targetSender) {
+    // 1. Participant Joins / Accepts
+    if (action === 'join' || status === 'accepted') {
+      if (invitationId) {
         await prisma.$executeRawUnsafe(
-          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() 
-           WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
-             AND LOWER("senderName") = $3
-             AND "type" = $4
-             AND "status" = 'active';`,
+          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() WHERE "id" = $1;`,
+          invitationId
+        );
+      } else if (partnerName || body.senderName) {
+        const partner = (partnerName || body.senderName).toLowerCase().trim();
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW()
+           WHERE (
+             (LOWER("senderName") = $1 AND (LOWER("receiverEmail") = $2 OR LOWER("receiverName") = $3))
+             OR
+             (LOWER("receiverName") = $1 AND (LOWER("senderEmail") = $2 OR LOWER("senderName") = $3))
+           )
+           ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''}
+           AND "status" IN ('active', 'accepted');`,
+          partner,
           userEmail,
-          userName,
-          targetSender,
-          targetType
+          userName
         );
       } else {
         await prisma.$executeRawUnsafe(
           `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() 
            WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
-             AND "type" = $3
+             AND "type" = COALESCE($3, 'activity')
              AND "status" = 'active';`,
           userEmail,
           userName,
-          targetType
+          type || 'activity'
         );
       }
-    } else if (type) {
-      // Expire all active invitations sent by this user for the specified type
-      await prisma.$executeRawUnsafe(
-        `UPDATE "Invitations" SET "status" = $1, "updatedAt" = NOW() WHERE LOWER("senderEmail") = $2 AND "type" = $3 AND "status" = 'active';`,
-        status,
+      return NextResponse.json({ success: true, message: "Invitation joined/accepted" }, { status: 200 });
+    }
+
+    // 2. Participant Leaves (action === 'leave' or status === 'leave')
+    if (action === 'leave' || status === 'leave') {
+      const partner = (partnerName || body.senderName || '').toLowerCase().trim();
+      const channelId = body.channelId;
+      
+      // Specifically handle Voice Room / Channel invitations (anyone can invite to room)
+      if (type === 'channel_invite' || channelId) {
+        // 1. If leaving user sent invitations to friends for this channel, expire those invitations
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+           WHERE "status" IN ('active', 'accepted')
+             AND (LOWER("senderEmail") = $1 OR LOWER("senderName") = $2)
+             AND ("type" = 'channel_invite' ${channelId ? `OR "channelId" = '${channelId}'` : ''} ${target ? `OR LOWER("targetName") = '${target}'` : ''});`,
+          userEmail,
+          userName
+        );
+
+        // 2. If leaving user was a guest who accepted an invitation to this channel, revert their invitation back to 'active'
+        // so they can re-join anytime via their notifications as long as the person who invited them hasn't left!
+        await prisma.$executeRawUnsafe(
+          `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW()
+           WHERE "status" = 'accepted'
+             AND (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
+             AND ("type" = 'channel_invite' ${channelId ? `OR "channelId" = '${channelId}'` : ''} ${target ? `OR LOWER("targetName") = '${target}'` : ''});`,
+          userEmail,
+          userName
+        );
+
+        return NextResponse.json({ success: true, message: "Left channel session" }, { status: 200 });
+      }
+
+      // Default activity handling (Listening Together, Watch Together, Photobooth)
+      const rows = await prisma.$queryRawUnsafe<any[]>(
+        `SELECT * FROM "Invitations"
+         WHERE "status" IN ('active', 'accepted')
+           AND (
+             (LOWER("senderEmail") = $1 OR LOWER("senderName") = $2)
+             OR
+             (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = $2)
+           )
+           ${partner ? `AND (LOWER("senderName") = '${partner}' OR LOWER("receiverName") = '${partner}')` : ''}
+           ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''}
+         ORDER BY "updatedAt" DESC LIMIT 1;`,
         userEmail,
+        userName
+      );
+
+      if (rows.length > 0) {
+        const inv = rows[0];
+        const isHost = (inv.senderEmail?.toLowerCase() === userEmail || inv.senderName?.toLowerCase() === userName);
+        
+        if (isHost) {
+          // Host leaves: Whole session ends and invitation is marked expired
+          await prisma.$executeRawUnsafe(
+            `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = $1;`,
+            inv.id
+          );
+          return NextResponse.json({ success: true, role: 'host', status: 'expired' }, { status: 200 });
+        } else {
+          // Guest leaves: Host remains in session, invitation reverts to 'active'
+          // so the guest can still re-join anytime via notifications!
+          await prisma.$executeRawUnsafe(
+            `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW() WHERE "id" = $1;`,
+            inv.id
+          );
+          return NextResponse.json({ success: true, role: 'guest', status: 'active' }, { status: 200 });
+        }
+      }
+      return NextResponse.json({ success: true, message: "No active session to leave" }, { status: 200 });
+    }
+
+    // 3. Explicit Expire / Cancel (action === 'end' or status === 'expired')
+    if (invitationId) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = $1;`,
+        invitationId
+      );
+    } else if (partnerName) {
+      const partner = partnerName.toLowerCase().trim();
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+         WHERE (
+           (LOWER("senderName") = $1 AND (LOWER("receiverEmail") = $2 OR LOWER("receiverName") = $3))
+           OR
+           (LOWER("receiverName") = $1 AND (LOWER("senderEmail") = $2 OR LOWER("senderName") = $3))
+         )
+         AND "type" = COALESCE($4, 'activity');`,
+        partner,
+        userEmail,
+        userName,
+        type || 'activity'
+      );
+    } else if (type) {
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+         WHERE (LOWER("senderEmail") = $1 OR LOWER("senderName") = $2)
+           AND "type" = $3
+           AND "status" IN ('active', 'accepted');`,
+        userEmail,
+        userName,
         type
       );
     }
 
-    return NextResponse.json({ success: true, message: `Invitations marked as ${status}` }, { status: 200 });
+    return NextResponse.json({ success: true, message: `Invitations marked as expired` }, { status: 200 });
 
   } catch (error: any) {
     console.error("PATCH Invitations error:", error);

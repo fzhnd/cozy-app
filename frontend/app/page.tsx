@@ -593,6 +593,21 @@ export default function CozyApp() {
   };
 
   const handleLeaveVoiceSession = () => {
+    if (activeVoiceSession) {
+      const cleanChanName = activeVoiceSession.channel.name.replace(/^[^\w\s\u00C0-\u024F\u1E00-\u1EFF]+\s*/, '');
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'leave',
+          type: 'channel_invite',
+          targetName: cleanChanName,
+          channelId: activeVoiceSession.channel.id
+        })
+      })
+      .then(() => refreshInvitations())
+      .catch(e => {});
+    }
     setActiveVoiceSession(null);
     setTargetChannelId(null);
     setIsInsideVoiceRoom(false);
@@ -600,7 +615,11 @@ export default function CozyApp() {
 
   const handleChannelActiveChange = (channel: GroupChannel | null) => {
     if (!channel) {
-      setActiveVoiceSession(null);
+      if (activeVoiceSession) {
+        handleLeaveVoiceSession();
+      } else {
+        setActiveVoiceSession(null);
+      }
     } else {
       if (currentGroup) {
         setActiveVoiceSession({ group: currentGroup, channel });
@@ -700,6 +719,7 @@ export default function CozyApp() {
 
   const [activeListeningFriend, setActiveListeningFriend] = useState<any>(null);
   const [activeWatchFriend, setActiveWatchFriend] = useState<any>(null);
+  const [activePhotoboothFriend, setActivePhotoboothFriend] = useState<any>(null);
   const [toastNotification, setToastNotification] = useState<string | null>(null);
 
   // Poll invitations from Supabase PostgreSQL
@@ -749,7 +769,7 @@ export default function CozyApp() {
   React.useEffect(() => {
     if (!session?.user?.email) return;
     refreshInvitations();
-    const interval = setInterval(refreshInvitations, 5000);
+    const interval = setInterval(refreshInvitations, 2000);
     return () => clearInterval(interval);
   }, [session?.user?.email]);
 
@@ -771,10 +791,10 @@ export default function CozyApp() {
       return { isLive: false, buttonText: 'Expired' };
     }
 
-    // 2. Channel/Voice Room Invite: Friend must be In Channel or invite is actively open
+    // 2. Channel/Voice Room Invite:
     if (n.type === 'channel_invite') {
-      const isInChannel = friend?.status === 'bg-yellow-500' || friend?.label === 'In Channel';
-      if (isInChannel || n.status === 'active') {
+      // As long as host has not expired the channel session, guest can join or re-join anytime
+      if (n.status === 'active' || n.status === 'accepted') {
         return { isLive: true, buttonText: 'Join Room' };
       }
       return { isLive: false, buttonText: 'Expired' };
@@ -791,18 +811,17 @@ export default function CozyApp() {
 
     // 4. Activity (Watch Together or Listening Together)
     if (n.type === 'activity') {
-      const isOld = n.time && (n.time.includes('h') || n.time.includes('day'));
-      const isExplicitlyActive = n.status === 'active' && !isOld;
-
       if (n.activity === 'Watch Together') {
-        if (isExplicitlyActive) {
+        // As long as host has not expired the session, guest can join or re-join anytime
+        if (n.status === 'active' || n.status === 'accepted') {
           return { isLive: true, buttonText: 'Join Activity' };
         }
         return { isLive: false, buttonText: 'Expired' };
       }
 
       if (n.activity === 'Listening Together') {
-        if (isExplicitlyActive) {
+        // As long as host has not expired the session, guest can join or re-join anytime
+        if (n.status === 'active' || n.status === 'accepted') {
           return { isLive: true, buttonText: 'Join Activity' };
         }
         return { isLive: false, buttonText: 'Expired' };
@@ -810,9 +829,9 @@ export default function CozyApp() {
     }
 
     // 5. Photobooth
-    if (n.type === 'photobooth') {
-      const isLive = n.status === 'active' && (!n.time || n.time.includes('m') || n.time === 'Just now');
-      if (isLive) {
+    if (n.type === 'photobooth' || n.activity === 'Photobooth') {
+      // As long as host has not expired the session, guest can join or re-join anytime
+      if (n.status === 'active' || n.status === 'accepted') {
         return { isLive: true, buttonText: 'Join Photobooth' };
       }
       return { isLive: false, buttonText: 'Expired' };
@@ -839,9 +858,27 @@ export default function CozyApp() {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
       if (foundFriend) setSelectedFriend(foundFriend);
     } else if (n.type === 'channel_invite') {
-      const grp = groups.find(g => g.id === n.groupId) || groups[0];
+      let grp = groups.find(g => g.id === n.groupId || g.name.toLowerCase() === (n.groupName || '').toLowerCase());
+      
+      // If the invited friend does not have this group yet, automatically add it so they can enter the channel seamlessly
+      if (!grp) {
+        const newJoinedGrp: GroupData = {
+          id: n.groupId || `grp-${Date.now()}`,
+          name: n.groupName || 'Community Group',
+          icon: '#1',
+          channels: [{ id: n.channelId || 'vc-1', name: n.channel || n.targetName || 'Lobby', isPublic: true, users: 1 }]
+        };
+        setGroups(prev => {
+          const updated = [...prev, newJoinedGrp];
+          syncUserData({ groups: updated });
+          return updated;
+        });
+        grp = newJoinedGrp;
+      }
+
       const targetChannel = grp?.channels.find(c => c.id === n.channelId || c.name.toLowerCase() === (n.channel || n.targetName)?.toLowerCase()) 
-        || publicChannels.find(c => c.id === n.channelId || c.name.toLowerCase() === (n.channel || n.targetName)?.toLowerCase());
+        || publicChannels.find(c => c.id === n.channelId || c.name.toLowerCase() === (n.channel || n.targetName)?.toLowerCase())
+        || grp?.channels[0];
       
       if (grp && targetChannel) {
         setActiveVoiceSession({ group: grp, channel: targetChannel });
@@ -856,6 +893,23 @@ export default function CozyApp() {
         if (n.groupId) setActiveGroupId(n.groupId);
         setActiveTab('group');
       }
+
+      // Update invitation status to 'accepted' in Supabase PostgreSQL
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'join',
+          invitationId: n.id,
+          partnerName: n.name,
+          type: 'channel_invite',
+          targetName: n.channel || n.targetName,
+          channelId: n.channelId,
+          status: 'accepted'
+        })
+      })
+      .then(() => refreshInvitations())
+      .catch(e => console.error("Error marking channel invitation accepted:", e));
     } else if (n.type === 'group_invite') {
       const targetGrp = groups.find(g => g.id === n.groupId || g.name.toLowerCase() === (n.groupName || n.targetName)?.toLowerCase());
       if (targetGrp) {
@@ -868,6 +922,22 @@ export default function CozyApp() {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
       setActiveWatchFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
       setIsWatchTogetherOpen(true);
+
+      // Update invitation status to 'accepted' in Supabase PostgreSQL
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'join',
+          invitationId: n.id,
+          partnerName: n.name,
+          type: 'activity',
+          targetName: 'Watch Together',
+          status: 'accepted'
+        })
+      })
+      .then(() => refreshInvitations())
+      .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
       const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
       setActiveListeningFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
@@ -878,14 +948,36 @@ export default function CozyApp() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          action: 'join',
           invitationId: n.id,
-          senderName: n.name,
+          partnerName: n.name,
           type: 'activity',
+          targetName: 'Listening Together',
           status: 'accepted'
         })
-      }).catch(e => console.error("Error marking invitation accepted:", e));
-    } else if (n.type === 'photobooth') {
+      })
+      .then(() => refreshInvitations())
+      .catch(e => console.error("Error marking invitation accepted:", e));
+    } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
+      const foundFriend = friendsList.find(f => f.name.toLowerCase() === n.name.toLowerCase());
+      setActivePhotoboothFriend(foundFriend || { name: n.name, avatar: n.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${n.seed}&backgroundColor=A577FF` });
       setActiveTab('photobooth');
+
+      // Update invitation status to 'accepted' in Supabase PostgreSQL
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'join',
+          invitationId: n.id,
+          partnerName: n.name,
+          type: 'photobooth',
+          targetName: 'Photobooth',
+          status: 'accepted'
+        })
+      })
+      .then(() => refreshInvitations())
+      .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }
   };
 
@@ -2088,6 +2180,7 @@ export default function CozyApp() {
             onGoHome={() => setActiveTab('home')} 
             friendsList={friendsList}
             initialListeningWith={activeListeningFriend}
+            onLeaveSession={() => setActiveListeningFriend(null)}
           />
         )}
 
@@ -2098,6 +2191,8 @@ export default function CozyApp() {
             userName={userName} 
             userImage={userImage} 
             friendsList={friendsList}
+            initialFriend={activePhotoboothFriend}
+            onLeaveSession={() => setActivePhotoboothFriend(null)}
           />
         )}
 
@@ -2308,6 +2403,7 @@ export default function CozyApp() {
         currentUser={{ name: userName, avatar: userImage }}
         friendsList={friendsList}
         initialFriend={activeWatchFriend}
+        onLeaveSession={() => setActiveWatchFriend(null)}
         roomMembers={friendsList.map(f => ({ name: f.name, avatar: (f as any).avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${f.seed || f.name}&backgroundColor=${f.color || 'A577FF'}` }))}
       />
 

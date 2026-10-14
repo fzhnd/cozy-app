@@ -488,16 +488,17 @@ export default function GroupView({
 
   const handleInviteFriend = (friendName: string) => {
     setInvitedFriends(prev => [...prev, friendName]);
-    showToast(activeChannel ? `Invitation to channel #${activeChannel.name} sent to ${friendName}!` : `Invitation to group ${group.name} sent to ${friendName}!`);
+    const cleanChanName = activeChannel ? activeChannel.name.replace(/^[^\w\s\u00C0-\u024F\u1E00-\u1EFF]+\s*/, '') : '';
+    showToast(activeChannel ? `Invitation to channel #${cleanChanName} sent to ${friendName}!` : `Invitation to group ${group.name} sent to ${friendName}!`);
 
-    // Send persistent invitation to Supabase PostgreSQL
+    // Send persistent invitation to Supabase PostgreSQL (only sends invite notification, no blinking icon)
     fetch('/api/invitations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         receiverName: friendName,
         type: activeChannel ? 'channel_invite' : 'group_invite',
-        targetName: activeChannel ? activeChannel.name : (group.name || 'Group'),
+        targetName: activeChannel ? cleanChanName : (group.name || 'Group'),
         channelId: activeChannel?.id,
         groupId: group.id
       })
@@ -678,6 +679,19 @@ export default function GroupView({
           <div className="pt-4 border-t border-white/5 flex items-center justify-between">
             <button 
               onClick={() => {
+                if (activeChannel) {
+                  const cleanChanName = activeChannel.name.replace(/^[^\w\s\u00C0-\u024F\u1E00-\u1EFF]+\s*/, '');
+                  fetch('/api/invitations', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      action: 'leave',
+                      type: 'channel_invite',
+                      targetName: cleanChanName,
+                      channelId: activeChannel.id
+                    })
+                  }).catch(e => {});
+                }
                 setActiveChannel(null);
                 if (onChannelActiveChange) {
                   onChannelActiveChange(null);
@@ -1021,6 +1035,7 @@ export default function GroupView({
           onClose={() => setIsWatchTogetherOpen(false)}
           currentUser={{ name: userName, avatar: userImage }}
           roomMembers={membersList}
+          friendsList={friendsList}
         />
       </div>
     );
@@ -1138,6 +1153,19 @@ export default function GroupView({
                         {chan.activeUsers}
                       </span>
                     )}
+
+                    {/* Quick Invite to Channel for Anyone */}
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveChannel({ ...chan, icon: chanIcon, name: chanCleanName });
+                        setIsInviteModalOpen(true);
+                      }}
+                      className="w-6 h-6 rounded-md flex items-center justify-center text-gray-400 hover:text-[#A577FF] hover:bg-white/10 transition-colors cursor-pointer"
+                      title={`Invite friends to #${chanCleanName}`}
+                    >
+                      <UserPlus size={13} />
+                    </button>
 
                     {/* Three Dots for Admin & Owner */}
                     {isCurrentUserAdmin && (
@@ -1584,16 +1612,14 @@ export default function GroupView({
               Group Members ({membersList.length})
             </span>
 
-            {isCurrentUserAdmin && (
-              <button 
-                onClick={() => setIsInviteModalOpen(true)}
-                title="Invite Members to Group"
-                className="flex items-center gap-1.5 bg-[#A577FF]/20 hover:bg-[#A577FF] text-[#A577FF] hover:text-white px-2.5 py-1 rounded-full text-[10px] font-bold transition-all"
-              >
-                <UserPlus size={12} />
-                <span>Invite</span>
-              </button>
-            )}
+            <button 
+              onClick={() => setIsInviteModalOpen(true)}
+              title="Invite Friends to Group"
+              className="flex items-center gap-1.5 bg-[#A577FF]/20 hover:bg-[#A577FF] text-[#A577FF] hover:text-white px-2.5 py-1 rounded-full text-[10px] font-bold transition-all cursor-pointer"
+            >
+              <UserPlus size={12} />
+              <span>Invite</span>
+            </button>
           </div>
 
           {/* Members List */}
@@ -2103,6 +2129,7 @@ export default function GroupView({
         onClose={() => setIsWatchTogetherOpen(false)}
         currentUser={{ name: userName, avatar: userImage }}
         roomMembers={membersList}
+        friendsList={friendsList}
       />
     </div>
   );

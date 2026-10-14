@@ -13,9 +13,10 @@ interface MusicViewProps {
   onGoHome?: () => void;
   friendsList?: any[];
   initialListeningWith?: any;
+  onLeaveSession?: () => void;
 }
 
-export default function MusicView({ userImage, onGoHome, friendsList = [], initialListeningWith }: MusicViewProps) {
+export default function MusicView({ userImage, onGoHome, friendsList = [], initialListeningWith, onLeaveSession }: MusicViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -159,6 +160,13 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
       setFriendState('joined');
       setToastMessage(`Connected: Listening together with ${initialListeningWith.name}`);
       setTimeout(() => setToastMessage(null), 3500);
+
+      // Immediately update session status to accepted in backend
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'join', partnerName: initialListeningWith.name, type: 'activity' })
+      }).catch(e => {});
     }
   }, [initialListeningWith]);
   
@@ -178,48 +186,75 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
     }).catch(err => console.error("Error sending listening invite:", err));
   };
 
-  // Poll sent invitation status when in waiting state (until friend accepts or session expires)
+  // Active listening session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
-    if (friendState !== 'waiting' || !activeFriend) return;
+    if (!userEmail) return;
 
-    // For built-in mock bots that aren't real users (only when not a real friend)
-    const isMockBot = !activeFriend.isRealFriend && ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(activeFriend.name);
-
-    if (isMockBot) {
-      // Simulate demo bot accepting after 5 seconds
+    // For built-in mock bots that aren't real users
+    if (friendState === 'waiting' && activeFriend && !activeFriend.isRealFriend && ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(activeFriend.name)) {
       const t = setTimeout(() => {
         setFriendState('joined');
         setToastMessage(`Started listening with ${activeFriend.name}`);
         setTimeout(() => setToastMessage(null), 3000);
-      }, 5000);
+      }, 4000);
       return () => clearTimeout(t);
     }
 
-    // For real users (such as 'ou'): NEVER auto-accept! Poll Supabase until accepted
-    const checkAcceptance = () => {
+    const syncSession = () => {
       fetch('/api/invitations')
         .then(res => res.json())
         .then(res => {
-          if (res.success && Array.isArray(res.sentInvitations)) {
-            const accepted = res.sentInvitations.find((inv: any) => 
-              inv.receiverName?.toLowerCase() === activeFriend.name?.toLowerCase() &&
-              inv.type === 'activity' &&
-              inv.status === 'accepted'
-            );
-            if (accepted) {
-              setFriendState('joined');
-              setToastMessage(`${activeFriend.name} accepted! Started listening together`);
-              setTimeout(() => setToastMessage(null), 3000);
+          if (!res.success) return;
+
+          const session = res.activeListeningSession;
+
+          // Case 1: Active listening session exists in Supabase
+          if (session) {
+            if (session.status === 'accepted') {
+              // Both users are joined!
+              if (friendState !== 'joined') {
+                const partnerObj = friendsList.find(f => f.name.toLowerCase() === session.partnerName.toLowerCase()) || {
+                  name: session.partnerName,
+                  avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`
+                };
+                setActiveFriend(partnerObj);
+                setFriendState('joined');
+                setToastMessage(`${session.partnerName} joined! Listening together`);
+                setTimeout(() => setToastMessage(null), 3000);
+              }
+            } else if (session.status === 'active') {
+              // Session is active (host is in room, but partner has left or not joined yet)
+              if (friendState === 'joined') {
+                // Partner left! Remove icon immediately on host's screen
+                const prevName = activeFriend?.name || session.partnerName;
+                setFriendState('none');
+                setActiveFriend(null);
+                if (onLeaveSession) onLeaveSession();
+                setToastMessage(`${prevName} left the listening session`);
+                setTimeout(() => setToastMessage(null), 3500);
+              }
+            }
+          } else {
+            // Case 2: No active session (host ended the session)
+            if (friendState === 'joined' || friendState === 'waiting') {
+              const prevName = activeFriend?.name;
+              setFriendState('none');
+              setActiveFriend(null);
+              if (onLeaveSession) onLeaveSession();
+              if (prevName) {
+                setToastMessage(`${prevName} ended the listening session`);
+                setTimeout(() => setToastMessage(null), 3500);
+              }
             }
           }
         })
-        .catch(err => console.error("Error polling sent invitations:", err));
+        .catch(err => console.error("Error syncing listening session:", err));
     };
 
-    checkAcceptance();
-    const interval = setInterval(checkAcceptance, 2500);
+    syncSession();
+    const interval = setInterval(syncSession, 1000);
     return () => clearInterval(interval);
-  }, [friendState, activeFriend]);
+  }, [userEmail, friendState, activeFriend, friendsList]);
 
   // Player progress
   useEffect(() => {
@@ -1224,16 +1259,20 @@ export default function MusicView({ userImage, onGoHome, friendsList = [], initi
             {(friendState === 'joined' || friendState === 'waiting') ? (
               <button 
                 onClick={() => { 
+                  const leavingPartner = activeFriend?.name;
+                  const wasWaiting = friendState === 'waiting';
                   setFriendState('none'); 
                   setActiveFriend(null);
+                  if (onLeaveSession) onLeaveSession();
                   fetch('/api/invitations', {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ type: 'activity', status: 'expired' })
+                    body: JSON.stringify({ action: 'leave', partnerName: leavingPartner, type: 'activity' })
                   }).catch(e => {});
-                  if (onGoHome) onGoHome(); 
+                  setToastMessage(wasWaiting ? "Invitation cancelled" : "Left the listening session");
+                  setTimeout(() => setToastMessage(null), 3000);
                 }}
-                className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors"
+                className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
                 title={friendState === 'waiting' ? "Cancel Invitation" : "Leave Listening Session"}
               >
                 <LogOut size={16} />

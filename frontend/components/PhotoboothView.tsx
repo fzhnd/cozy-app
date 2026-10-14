@@ -19,6 +19,8 @@ interface PhotoboothViewProps {
   userName?: string;
   userImage?: string;
   friendsList?: Array<{ name: string; avatar?: string; seed?: string; color?: string }>;
+  initialFriend?: any;
+  onLeaveSession?: () => void;
 }
 
 // Collage Layout Options
@@ -81,7 +83,9 @@ export default function PhotoboothView({
   onGoHome, 
   userName = 'You', 
   userImage,
-  friendsList = []
+  friendsList = [],
+  initialFriend,
+  onLeaveSession
 }: PhotoboothViewProps) {
   // Camera & Stream State
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -246,6 +250,96 @@ export default function PhotoboothView({
   const nextTurnUser = activeUsers[(currentTurnIndex + 1) % activeUsers.length] || activeUsers[0];
   const isMyTurn = currentTurnUser.name === userName;
 
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Sync initialFriend if joining from notification
+  useEffect(() => {
+    if (initialFriend) {
+      setJoinedUsers(prev => {
+        if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
+          return [...prev, {
+            name: initialFriend.name,
+            avatar: initialFriend.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`,
+            status: 'joined'
+          }];
+        }
+        return prev;
+      });
+      setToastMessage(`Joined Photobooth with ${initialFriend.name}`);
+      setTimeout(() => setToastMessage(null), 3000);
+
+      // Immediately inform database that we joined Photobooth
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'join', partnerName: initialFriend.name, type: 'photobooth', targetName: 'Photobooth' })
+      }).catch(e => {});
+    }
+  }, [initialFriend]);
+
+  // Active Photobooth session sync (handles join, partner leave, host session end in real-time)
+  useEffect(() => {
+    const syncSession = () => {
+      fetch('/api/invitations')
+        .then(res => res.json())
+        .then(res => {
+          if (!res.success) return;
+
+          const session = res.activePhotoboothSession;
+
+          if (session) {
+            if (session.status === 'accepted') {
+              // Both users are joined!
+              setJoinedUsers(prev => {
+                const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                if (!exists) {
+                  setToastMessage(`${session.partnerName} joined Photobooth!`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return [...prev, {
+                    name: session.partnerName,
+                    avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`,
+                    status: 'joined'
+                  }];
+                } else if (exists.status !== 'joined') {
+                  setToastMessage(`${session.partnerName} accepted! Joined Photobooth`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'joined' } : u);
+                }
+                return prev;
+              });
+            } else if (session.status === 'active') {
+              // Host is in session, but partner left
+              setJoinedUsers(prev => {
+                const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                if (partnerUser && partnerUser.status === 'joined') {
+                  setToastMessage(`${session.partnerName} left Photobooth`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
+                }
+                return prev;
+              });
+            }
+          } else {
+            // Session expired or host ended
+            setJoinedUsers(prev => {
+              const otherUsers = prev.filter(u => u.name !== userName);
+              if (otherUsers.length > 0) {
+                setToastMessage(`Photobooth session ended`);
+                setTimeout(() => setToastMessage(null), 3000);
+                return prev.filter(u => u.name === userName);
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(err => console.error("Error syncing photobooth session:", err));
+    };
+
+    syncSession();
+    const interval = setInterval(syncSession, 1000);
+    return () => clearInterval(interval);
+  }, [userName]);
+
   const handleInviteFriend = (friend: { name: string; avatar: string }) => {
     if (joinedUsers.some(u => u.name === friend.name)) return;
     setIsInviteOpen(false);
@@ -253,10 +347,41 @@ export default function PhotoboothView({
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
-    // 2. After 2.5s, they officially join (no popup shown)
-    setTimeout(() => {
-      setJoinedUsers(prev => prev.map(u => u.name === friend.name ? { ...u, status: 'joined' } : u));
-    }, 2500);
+    // Send persistent invitation to Supabase PostgreSQL
+    fetch('/api/invitations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        receiverName: friend.name,
+        type: 'photobooth',
+        targetName: 'Photobooth'
+      })
+    }).catch(err => console.error("Error sending photobooth invitation:", err));
+
+    // For built-in mock bots only
+    const isMockBot = ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(friend.name) && !friendsList.some(f => f.name.toLowerCase() === friend.name.toLowerCase() && (f as any).isRealFriend);
+    if (isMockBot) {
+      setTimeout(() => {
+        setJoinedUsers(prev => prev.map(u => u.name === friend.name ? { ...u, status: 'joined' } : u));
+      }, 3500);
+    }
+  };
+
+  const handleExitPhotobooth = () => {
+    const partner = joinedUsers.find(u => u.name !== userName);
+    fetch('/api/invitations', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'leave',
+        partnerName: partner?.name,
+        type: 'photobooth',
+        targetName: 'Photobooth'
+      })
+    }).catch(e => {});
+
+    if (onLeaveSession) onLeaveSession();
+    onGoHome();
   };
 
   // Request Camera Access on Mount
@@ -776,19 +901,21 @@ export default function PhotoboothView({
                     <img 
                       src={user.avatar} 
                       alt={user.name} 
-                      className={`w-8 h-8 rounded-full border-2 border-[#150A35] object-cover bg-purple-500/20 shadow-md transition-all ${
+                      className={`w-9 h-9 rounded-full border-2 transition-all object-cover relative z-0 ${
                         isPending
-                          ? 'animate-pulse opacity-60 ring-2 ring-yellow-400/80 scale-105'
+                          ? 'animate-pulse opacity-70 ring-2 ring-yellow-400/80 border-yellow-400'
                           : isCurrentTurn
-                          ? 'ring-2 ring-[#A577FF] scale-105 z-10 opacity-100'
-                          : 'opacity-100'
+                          ? 'ring-2 ring-[#A577FF] scale-105 z-10 opacity-100 border-[#150A35]'
+                          : 'opacity-100 border-[#150A35]'
                       }`}
                     />
-                    <span className={`absolute -bottom-1 -right-1 text-[8px] font-black px-1 rounded-full border border-white/10 ${
-                      isPending ? 'bg-yellow-500/80 text-black animate-pulse' : 'bg-[#1E123F] text-[#C4A6FF]'
-                    }`}>
-                      {isPending ? '⏳' : `#${idx + 1}`}
-                    </span>
+                    {isPending ? (
+                      <span className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 border-2 border-[#150A35] rounded-full animate-ping z-20 pointer-events-none" />
+                    ) : (
+                      <span className="absolute -bottom-1 -right-1 text-[8px] font-black px-1 rounded-full border border-white/10 bg-[#1E123F] text-[#C4A6FF]">
+                        #{idx + 1}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -869,7 +996,7 @@ export default function PhotoboothView({
 
           {/* Exit Icon Button (Replaces Text "Exit") */}
           <button 
-            onClick={onGoHome}
+            onClick={handleExitPhotobooth}
             className="w-9 h-9 rounded-xl bg-red-500/10 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center border border-red-500/20 transition-all cursor-pointer group/exit shadow-sm shrink-0"
             title="Exit Photobooth"
           >

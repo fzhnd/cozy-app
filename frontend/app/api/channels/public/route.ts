@@ -20,6 +20,7 @@ async function ensurePublicChannelsTable() {
       "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
       "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE IF EXISTS "PublicChannels" ENABLE ROW LEVEL SECURITY;
   `);
 }
 

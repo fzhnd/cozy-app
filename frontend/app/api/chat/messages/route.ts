@@ -20,6 +20,7 @@ async function ensureDirectMessagesTable() {
       "time" TEXT NOT NULL,
       "createdAt" TIMESTAMP NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE IF EXISTS "DirectMessages" ENABLE ROW LEVEL SECURITY;
   `);
 }
 

@@ -122,6 +122,7 @@ interface WatchTogetherModalProps {
   roomMembers?: Array<{ name: string; avatar: string; isHost?: boolean }>;
   friendsList?: any[];
   initialFriend?: any;
+  onLeaveSession?: () => void;
 }
 
 export default function WatchTogetherModal({
@@ -130,7 +131,8 @@ export default function WatchTogetherModal({
   currentUser = { name: 'You', avatar: 'https://api.dicebear.com/7.x/adventurer/svg?seed=Leo' },
   roomMembers = [],
   friendsList = [],
-  initialFriend
+  initialFriend,
+  onLeaveSession
 }: WatchTogetherModalProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeVideo, setActiveVideo] = useState<WatchVideo | null>(null);
@@ -172,8 +174,80 @@ export default function WatchTogetherModal({
       });
       setToastMessage(`Joined Watch Together with ${initialFriend.name}`);
       setTimeout(() => setToastMessage(null), 3000);
+
+      // Immediately inform database that we joined Watch Together
+      fetch('/api/invitations', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'join', partnerName: initialFriend.name, type: 'activity', targetName: 'Watch Together' })
+      }).catch(e => {});
     }
   }, [initialFriend]);
+
+  // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const syncSession = () => {
+      fetch('/api/invitations')
+        .then(res => res.json())
+        .then(res => {
+          if (!res.success) return;
+
+          const session = res.activeWatchSession;
+
+          if (session) {
+            if (session.status === 'accepted') {
+              // Both users connected!
+              setJoinedUsers(prev => {
+                const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                if (!exists) {
+                  setToastMessage(`${session.partnerName} joined Watch Together!`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return [...prev, {
+                    name: session.partnerName,
+                    avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`,
+                    status: 'joined'
+                  }];
+                } else if (exists.status !== 'joined') {
+                  setToastMessage(`${session.partnerName} accepted! Joined Watch Together`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'joined' } : u);
+                }
+                return prev;
+              });
+            } else if (session.status === 'active') {
+              // Host is still in room, but guest left
+              setJoinedUsers(prev => {
+                const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                if (partnerUser && partnerUser.status === 'joined') {
+                  setToastMessage(`${session.partnerName} left Watch Together`);
+                  setTimeout(() => setToastMessage(null), 3000);
+                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
+                }
+                return prev;
+              });
+            }
+          } else {
+            // Session expired or host ended
+            setJoinedUsers(prev => {
+              const otherUsers = prev.filter(u => u.name !== currentUser.name);
+              if (otherUsers.length > 0) {
+                setToastMessage(`Watch Together session ended`);
+                setTimeout(() => setToastMessage(null), 3000);
+                return prev.filter(u => u.name === currentUser.name);
+              }
+              return prev;
+            });
+          }
+        })
+        .catch(err => console.error("Error syncing watch session:", err));
+    };
+
+    syncSession();
+    const interval = setInterval(syncSession, 1000);
+    return () => clearInterval(interval);
+  }, [isOpen, currentUser.name]);
 
   // Combine real friends, room members & mock friends for invite list
   const availableFriends = React.useMemo(() => {
@@ -220,10 +294,30 @@ export default function WatchTogetherModal({
       })
     }).catch(err => console.error("Error sending watch invitation:", err));
 
-    // 2. Demo bot fallback: after 2.5s, they officially join
-    setTimeout(() => {
-      setJoinedUsers(prev => prev.map(u => u.name === friend.name ? { ...u, status: 'joined' } : u));
-    }, 2500);
+    // For built-in mock bots only (not real friends)
+    const isMockBot = ['Luna', 'Jasper', 'Mimi', 'Felix', 'Oscar', 'Aneka'].includes(friend.name) && !friendsList.some(f => f.name.toLowerCase() === friend.name.toLowerCase() && (f as any).isRealFriend);
+    if (isMockBot) {
+      setTimeout(() => {
+        setJoinedUsers(prev => prev.map(u => u.name === friend.name ? { ...u, status: 'joined' } : u));
+      }, 3500);
+    }
+  };
+
+  const handleCloseModal = () => {
+    const partner = joinedUsers.find(u => u.name !== currentUser.name);
+    fetch('/api/invitations', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'leave',
+        partnerName: partner?.name,
+        type: 'activity',
+        targetName: 'Watch Together'
+      })
+    }).catch(e => {});
+
+    if (onLeaveSession) onLeaveSession();
+    onClose();
   };
 
   // Helper to extract YouTube video ID from various URL formats
@@ -347,16 +441,14 @@ export default function WatchTogetherModal({
                     <img 
                       src={user.avatar} 
                       alt={user.name} 
-                      className={`w-8 h-8 rounded-full border-2 border-[#161616] object-cover bg-purple-500/20 shadow-md transition-all ${
+                      className={`w-8 h-8 rounded-full border-2 transition-all object-cover relative z-0 ${
                         isPending 
-                          ? 'animate-pulse opacity-60 ring-2 ring-yellow-400/80 scale-105' 
-                          : 'opacity-100 hover:scale-105'
+                          ? 'animate-pulse opacity-70 ring-2 ring-yellow-400/80 border-yellow-400' 
+                          : 'border-[#161616] opacity-100 ring-0 hover:scale-105'
                       }`}
                     />
                     {isPending && (
-                      <span className="absolute -bottom-1 -right-1 text-[8px] font-black px-1 rounded-full bg-yellow-500 text-black border border-black/40 animate-pulse">
-                        ⏳
-                      </span>
+                      <span className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 border-2 border-[#161616] rounded-full animate-ping z-20 pointer-events-none" />
                     )}
                   </div>
                 );
@@ -503,7 +595,7 @@ export default function WatchTogetherModal({
 
             {/* Exit Button (LogOut icon replacing X) */}
             <button 
-              onClick={onClose}
+              onClick={handleCloseModal}
               className="w-8 h-8 rounded-full bg-red-500/15 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all cursor-pointer group/exit border border-red-500/20"
               title="Leave Watch Together"
             >
