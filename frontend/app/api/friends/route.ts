@@ -4,6 +4,12 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
 import { ensureDatabaseTables } from "@/lib/dbInit";
 
+const escapeSql = (str: string) => (str || '').replace(/'/g, "''");
+const toInSql = (arr: string[]) => {
+  const filtered = arr.filter(Boolean).map(s => `'${escapeSql(s.toLowerCase().trim())}'`);
+  return filtered.length > 0 ? filtered.join(", ") : "''";
+};
+
 // GET: Fetch accepted friends and pending friend requests for current user
 export async function GET(req: Request) {
   try {
@@ -27,36 +33,84 @@ export async function GET(req: Request) {
     const paramUsername = searchParams.get("username")?.toLowerCase().trim() || "";
 
     const myNames = Array.from(new Set([myDbName, mySessionName, paramUsername, myEmailPrefix].filter(Boolean)));
+    const myNamesSql = toInSql(myNames);
+    const safeEmail = escapeSql(myEmail);
 
     // 1. Pending requests sent TO me (waiting for my approval)
     const pendingRows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "Friendships" 
-       WHERE (LOWER("user2Email") = $1 OR LOWER("user2Name") = ANY($2::text[])) 
+       WHERE (LOWER("user2Email") = '${safeEmail}' OR LOWER("user2Name") IN (${myNamesSql})) 
          AND "status" = 'pending' 
-       ORDER BY "createdAt" DESC;`,
-      myEmail,
-      myNames
+       ORDER BY "createdAt" DESC;`
     );
-
-    const pendingRequests = pendingRows.map(r => ({
-      id: r.id,
-      name: r.user1Name,
-      seed: r.user1Name,
-      email: r.user1Email,
-      avatar: r.user1Image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${r.user1Name}&backgroundColor=F9EBD8`,
-      color: 'F9EBD8',
-      createdAt: r.createdAt
-    }));
 
     // 2. Pending requests sent BY me
     const sentRows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "Friendships" 
-       WHERE (LOWER("user1Email") = $1 OR LOWER("user1Name") = ANY($2::text[])) 
+       WHERE (LOWER("user1Email") = '${safeEmail}' OR LOWER("user1Name") IN (${myNamesSql})) 
          AND "status" = 'pending' 
-       ORDER BY "createdAt" DESC;`,
-      myEmail,
-      myNames
+       ORDER BY "createdAt" DESC;`
     );
+
+    // 3. Accepted friendships (both directions)
+    const acceptedRows = await prisma.$queryRawUnsafe<any[]>(
+      `SELECT * FROM "Friendships" 
+       WHERE "status" = 'accepted' 
+         AND (
+           LOWER("user1Email") = '${safeEmail}' OR LOWER("user1Name") IN (${myNamesSql})
+           OR
+           LOWER("user2Email") = '${safeEmail}' OR LOWER("user2Name") IN (${myNamesSql})
+         ) 
+       ORDER BY "updatedAt" DESC;`
+    );
+
+    // Batch resolve latest user profile images from prisma.user for all participants
+    const allParticipantEmails = new Set<string>();
+    const allParticipantNames = new Set<string>();
+
+    [...pendingRows, ...acceptedRows].forEach(r => {
+      if (r.user1Email) allParticipantEmails.add(r.user1Email.toLowerCase().trim());
+      if (r.user2Email) allParticipantEmails.add(r.user2Email.toLowerCase().trim());
+      if (r.user1Name) allParticipantNames.add(r.user1Name.toLowerCase().trim());
+      if (r.user2Name) allParticipantNames.add(r.user2Name.toLowerCase().trim());
+    });
+
+    const userImageMap = new Map<string, string>();
+    if (allParticipantEmails.size > 0 || allParticipantNames.size > 0) {
+      const dbUsers = await prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: Array.from(allParticipantEmails) } },
+            { name: { in: Array.from(allParticipantNames), mode: 'insensitive' } }
+          ]
+        },
+        select: { email: true, name: true, image: true }
+      });
+
+      dbUsers.forEach((u: any) => {
+        if (u.image) {
+          if (u.email) userImageMap.set(u.email.toLowerCase().trim(), u.image);
+          if (u.name) userImageMap.set(u.name.toLowerCase().trim(), u.image);
+        }
+      });
+    }
+
+    const pendingRequests = pendingRows.map(r => {
+      const resolvedAvatar = (r.user1Email && userImageMap.get(r.user1Email.toLowerCase().trim()))
+        || (r.user1Name && userImageMap.get(r.user1Name.toLowerCase().trim()))
+        || r.user1Image
+        || `https://api.dicebear.com/7.x/adventurer/svg?seed=${r.user1Name}&backgroundColor=F9EBD8`;
+
+      return {
+        id: r.id,
+        name: r.user1Name,
+        seed: r.user1Name,
+        email: r.user1Email,
+        avatar: resolvedAvatar,
+        color: 'F9EBD8',
+        createdAt: r.createdAt
+      };
+    });
 
     const sentRequests = sentRows.map(r => ({
       id: r.id,
@@ -65,20 +119,6 @@ export async function GET(req: Request) {
       createdAt: r.createdAt
     }));
 
-    // 3. Accepted friendships (both directions)
-    const acceptedRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Friendships" 
-       WHERE "status" = 'accepted' 
-         AND (
-           LOWER("user1Email") = $1 OR LOWER("user1Name") = ANY($2::text[])
-           OR
-           LOWER("user2Email") = $1 OR LOWER("user2Name") = ANY($2::text[])
-         ) 
-       ORDER BY "updatedAt" DESC;`,
-      myEmail,
-      myNames
-    );
-
     const friends = acceptedRows.map(r => {
       const isUser1Me = (
         r.user1Email?.toLowerCase() === myEmail ||
@@ -86,14 +126,19 @@ export async function GET(req: Request) {
       );
       const friendName = isUser1Me ? r.user2Name : r.user1Name;
       const friendEmail = isUser1Me ? r.user2Email : r.user1Email;
-      const friendImage = isUser1Me ? r.user2Image : r.user1Image;
+      const friendSavedImage = isUser1Me ? r.user2Image : r.user1Image;
+
+      const resolvedAvatar = (friendEmail && userImageMap.get(friendEmail.toLowerCase().trim()))
+        || (friendName && userImageMap.get(friendName.toLowerCase().trim()))
+        || friendSavedImage
+        || `https://api.dicebear.com/7.x/adventurer/svg?seed=${friendName}&backgroundColor=A577FF`;
 
       return {
         id: r.id,
         name: friendName,
         seed: friendName,
         email: friendEmail,
-        avatar: friendImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${friendName}&backgroundColor=A577FF`,
+        avatar: resolvedAvatar,
         color: 'A577FF',
         status: 'bg-green-500',
         label: 'Online',

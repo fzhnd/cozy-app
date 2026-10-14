@@ -7,6 +7,12 @@ import { ensureDatabaseTables } from "@/lib/dbInit";
 let lastExpiredCleanup = 0;
 const userNameCache = new Map<string, { name: string; expiry: number }>();
 
+const escapeSql = (str: string) => (str || '').replace(/'/g, "''");
+const toInSql = (arr: string[]) => {
+  const filtered = arr.filter(Boolean).map(s => `'${escapeSql(s.toLowerCase().trim())}'`);
+  return filtered.length > 0 ? filtered.join(", ") : "''";
+};
+
 // GET: Retrieve invitations and active activity sessions for current user
 export async function GET(req: Request) {
   try {
@@ -40,6 +46,8 @@ export async function GET(req: Request) {
     const queryUsername = searchParams.get("username")?.toLowerCase().trim() || "";
 
     const myNames = Array.from(new Set([myDbName, mySessionName, queryUsername, myEmailPrefix].filter(Boolean)));
+    const myNamesSql = toInSql(myNames);
+    const safeEmail = escapeSql(myEmail);
 
     // Auto-expire active or accepted invitations older than 30 minutes (throttled to once every 2 minutes, non-blocking)
     if (Date.now() - lastExpiredCleanup > 120000) {
@@ -55,14 +63,43 @@ export async function GET(req: Request) {
     const allRows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "Invitations" 
        WHERE (
-         LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+         LOWER("senderEmail") = '${safeEmail}' OR LOWER("senderName") IN (${myNamesSql})
          OR 
-         LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
+         LOWER("receiverEmail") = '${safeEmail}' OR LOWER("receiverName") IN (${myNamesSql})
        )
-       ORDER BY "createdAt" DESC LIMIT 60;`,
-      myEmail,
-      myNames
+       ORDER BY "createdAt" DESC LIMIT 60;`
     );
+
+    // Batch query real user profile avatars for all participants in allRows
+    const participantEmails = new Set<string>();
+    const participantNames = new Set<string>();
+
+    allRows.forEach((r: any) => {
+      if (r.senderEmail) participantEmails.add(r.senderEmail.toLowerCase().trim());
+      if (r.receiverEmail) participantEmails.add(r.receiverEmail.toLowerCase().trim());
+      if (r.senderName) participantNames.add(r.senderName.toLowerCase().trim());
+      if (r.receiverName) participantNames.add(r.receiverName.toLowerCase().trim());
+    });
+
+    const userImageMap = new Map<string, string>();
+    if (participantEmails.size > 0 || participantNames.size > 0) {
+      const dbUsers = await prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { in: Array.from(participantEmails) } },
+            { name: { in: Array.from(participantNames), mode: 'insensitive' } }
+          ]
+        },
+        select: { email: true, name: true, image: true }
+      });
+
+      dbUsers.forEach((u: any) => {
+        if (u.image) {
+          if (u.email) userImageMap.set(u.email.toLowerCase().trim(), u.image);
+          if (u.name) userImageMap.set(u.name.toLowerCase().trim(), u.image);
+        }
+      });
+    }
 
     const isReceiver = (r: any) => {
       const recEmail = r.receiverEmail?.toLowerCase()?.trim();
@@ -76,27 +113,34 @@ export async function GET(req: Request) {
       return sndEmail === myEmail || (sndName && myNames.includes(sndName));
     };
 
-    const invitations = allRows.filter(isReceiver).map((r, idx) => ({
-      id: r.id || `inv_${idx}`,
-      senderEmail: r.senderEmail,
-      name: r.senderName,
-      seed: r.senderName,
-      avatar: r.senderImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${r.senderName}&backgroundColor=A577FF`,
-      receiverEmail: r.receiverEmail,
-      receiverName: r.receiverName,
-      type: r.type,
-      targetName: r.targetName,
-      game: r.type === 'game_invite' ? r.targetName : undefined,
-      activity: (r.type === 'activity' || r.type === 'photobooth') ? r.targetName : undefined,
-      channel: r.type === 'channel_invite' ? r.targetName : undefined,
-      groupName: r.type === 'group_invite' ? r.targetName : undefined,
-      groupId: r.groupId,
-      channelId: r.channelId,
-      status: r.status,
-      time: formatRelativeTime(new Date(r.createdAt)),
-      read: false,
-      createdAt: r.createdAt
-    }));
+    const invitations = allRows.filter(isReceiver).map((r, idx) => {
+      const resolvedAvatar = r.senderImage 
+        || (r.senderEmail && userImageMap.get(r.senderEmail.toLowerCase().trim())) 
+        || (r.senderName && userImageMap.get(r.senderName.toLowerCase().trim())) 
+        || `https://api.dicebear.com/7.x/adventurer/svg?seed=${r.senderName}&backgroundColor=A577FF`;
+
+      return {
+        id: r.id || `inv_${idx}`,
+        senderEmail: r.senderEmail,
+        name: r.senderName,
+        seed: r.senderName,
+        avatar: resolvedAvatar,
+        receiverEmail: r.receiverEmail,
+        receiverName: r.receiverName,
+        type: r.type,
+        targetName: r.targetName,
+        game: r.type === 'game_invite' ? r.targetName : undefined,
+        activity: (r.type === 'activity' || r.type === 'photobooth') ? r.targetName : undefined,
+        channel: r.type === 'channel_invite' ? r.targetName : undefined,
+        groupName: r.type === 'group_invite' ? r.targetName : undefined,
+        groupId: r.groupId,
+        channelId: r.channelId,
+        status: r.status,
+        time: formatRelativeTime(new Date(r.createdAt)),
+        read: false,
+        createdAt: r.createdAt
+      };
+    });
 
     const sentInvitations = allRows.filter(isSender).map((r, idx) => ({
       id: r.id || `inv_sent_${idx}`,
@@ -130,12 +174,24 @@ export async function GET(req: Request) {
       }
 
       const partnerName = isHost ? row.receiverName : row.senderName;
-      const partnerImage = isHost ? null : row.senderImage;
+      const partnerEmail = isHost ? row.receiverEmail : row.senderEmail;
+
+      const partnerImage = 
+        (partnerEmail && userImageMap.get(partnerEmail.toLowerCase().trim())) ||
+        (partnerName && userImageMap.get(partnerName.toLowerCase().trim())) ||
+        (!isHost ? row.senderImage : null);
+
+      const senderRealImage = 
+        row.senderImage ||
+        (row.senderEmail && userImageMap.get(row.senderEmail.toLowerCase().trim())) ||
+        (row.senderName && userImageMap.get(row.senderName.toLowerCase().trim())) ||
+        null;
+
       return {
         id: row.id,
         isHost,
         senderName: row.senderName,
-        senderImage: row.senderImage,
+        senderImage: senderRealImage,
         receiverName: row.receiverName,
         partnerName,
         partnerImage,
@@ -221,26 +277,27 @@ export async function POST(req: Request) {
 
     // Expire any existing active or accepted invitations involving the sender or receiver for the same activity
     const senderNamesList = Array.from(new Set([senderName.toLowerCase(), senderEmail.split('@')[0], session.user.name?.toLowerCase().trim()].filter(Boolean))) as string[];
+    const senderNamesSql = toInSql(senderNamesList);
+    const safeType = escapeSql(type);
+    const safeTarget = escapeSql(targetName);
+    const safeSenderEmail = escapeSql(senderEmail);
+    const safeFinalRecName = escapeSql(finalReceiverName.toLowerCase());
+    const safeFinalRecEmail = escapeSql(finalReceiverEmail);
+
     await prisma.$executeRawUnsafe(
       `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
        WHERE (
-           LOWER("targetName") = LOWER($1)
-           OR LOWER("type") = LOWER($1)
-           OR LOWER("targetName") = LOWER($2)
-           OR LOWER("type") = LOWER($2)
+           LOWER("targetName") = '${safeType.toLowerCase()}'
+           OR LOWER("type") = '${safeType.toLowerCase()}'
+           OR LOWER("targetName") = '${safeTarget.toLowerCase()}'
+           OR LOWER("type") = '${safeTarget.toLowerCase()}'
          )
          AND (
-           LOWER("senderEmail") = $3 OR LOWER("senderName") = ANY($4::text[])
-           OR LOWER("receiverEmail") = $3 OR LOWER("receiverName") = ANY($4::text[])
-           OR (LOWER("receiverName") = $5 OR (LOWER("receiverEmail") = $6 AND $6 != ''))
+           LOWER("senderEmail") = '${safeSenderEmail}' OR LOWER("senderName") IN (${senderNamesSql})
+           OR LOWER("receiverEmail") = '${safeSenderEmail}' OR LOWER("receiverName") IN (${senderNamesSql})
+           OR (LOWER("receiverName") = '${safeFinalRecName}' OR (LOWER("receiverEmail") = '${safeFinalRecEmail}' AND '${safeFinalRecEmail}' != ''))
          )
-         AND "status" IN ('active', 'accepted');`,
-      type,
-      targetName,
-      senderEmail,
-      senderNamesList,
-      finalReceiverName.toLowerCase(),
-      finalReceiverEmail
+         AND "status" IN ('active', 'accepted');`
     );
 
     const invId = `inv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
@@ -307,12 +364,17 @@ export async function PATCH(req: Request) {
     const rawPartner = (partnerName || body.partnerName || '').toLowerCase().trim();
     const partner = (rawPartner && !myNames.includes(rawPartner) && rawPartner !== userEmail) ? rawPartner : '';
 
+    const safeMyNamesSql = toInSql(myNames);
+    const safeUserEmail = escapeSql(userEmail);
+    const safePartner = escapeSql(partner);
+    const safeTarget = escapeSql(target);
+    const safeType = escapeSql(type || 'activity');
+
     // 1. Participant Joins / Accepts
     if (action === 'join' || status === 'accepted') {
       if (invitationId) {
         await prisma.$executeRawUnsafe(
-          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() WHERE "id" = $1;`,
-          invitationId
+          `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() WHERE "id" = '${escapeSql(invitationId)}';`
         );
       }
 
@@ -321,32 +383,26 @@ export async function PATCH(req: Request) {
           `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW()
            WHERE (
              (
-               (LOWER("senderName") = ANY($1::text[]) OR LOWER("senderEmail") = $2)
+               (LOWER("senderName") IN (${safeMyNamesSql}) OR LOWER("senderEmail") = '${safeUserEmail}')
                AND
-               (LOWER("receiverName") = $3 OR LOWER("receiverEmail") = $3)
+               (LOWER("receiverName") = '${safePartner}' OR LOWER("receiverEmail") = '${safePartner}')
              )
              OR
              (
-               (LOWER("receiverName") = ANY($1::text[]) OR LOWER("receiverEmail") = $2)
+               (LOWER("receiverName") IN (${safeMyNamesSql}) OR LOWER("receiverEmail") = '${safeUserEmail}')
                AND
-               (LOWER("senderName") = $3 OR LOWER("senderEmail") = $3)
+               (LOWER("senderName") = '${safePartner}' OR LOWER("senderEmail") = '${safePartner}')
              )
            )
            AND "status" IN ('active', 'accepted')
-           ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''};`,
-          myNames,
-          userEmail,
-          partner
+           ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''};`
         );
       } else if (!invitationId) {
         await prisma.$executeRawUnsafe(
           `UPDATE "Invitations" SET "status" = 'accepted', "updatedAt" = NOW() 
-           WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[]))
-             AND "type" = COALESCE($3, 'activity')
-             AND "status" = 'active';`,
-          userEmail,
-          myNames,
-          type || 'activity'
+           WHERE (LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql}))
+             AND "type" = '${safeType}'
+             AND "status" = 'active';`
         );
       }
       return NextResponse.json({ success: true, message: "Invitation joined/accepted" }, { status: 200 });
@@ -355,6 +411,7 @@ export async function PATCH(req: Request) {
     // 2. Participant Leaves (action === 'leave' or status === 'leave')
     if (action === 'leave' || status === 'leave') {
       const channelId = body.channelId;
+      const safeChannelId = channelId ? escapeSql(channelId) : '';
       
       // Specifically handle Voice Room / Channel invitations
       if (type === 'channel_invite' || channelId) {
@@ -362,20 +419,16 @@ export async function PATCH(req: Request) {
         await prisma.$executeRawUnsafe(
           `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
            WHERE "status" IN ('active', 'accepted')
-             AND (LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[]))
-             AND ("type" = 'channel_invite' ${channelId ? `OR "channelId" = '${channelId}'` : ''} ${target ? `OR LOWER("targetName") = '${target}'` : ''});`,
-          userEmail,
-          myNames
+             AND (LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql}))
+             AND ("type" = 'channel_invite' ${safeChannelId ? `OR "channelId" = '${safeChannelId}'` : ''} ${safeTarget ? `OR LOWER("targetName") = '${safeTarget}'` : ''});`
         );
 
         // If leaving user was guest, revert their accepted invite back to 'active' so they can re-join anytime
         await prisma.$executeRawUnsafe(
           `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW()
            WHERE "status" = 'accepted'
-             AND (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[]))
-             AND ("type" = 'channel_invite' ${channelId ? `OR "channelId" = '${channelId}'` : ''} ${target ? `OR LOWER("targetName") = '${target}'` : ''});`,
-          userEmail,
-          myNames
+             AND (LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql}))
+             AND ("type" = 'channel_invite' ${safeChannelId ? `OR "channelId" = '${safeChannelId}'` : ''} ${safeTarget ? `OR LOWER("targetName") = '${safeTarget}'` : ''});`
         );
 
         return NextResponse.json({ success: true, message: "Left channel session" }, { status: 200 });
@@ -386,15 +439,13 @@ export async function PATCH(req: Request) {
         `SELECT * FROM "Invitations"
          WHERE "status" IN ('active', 'accepted')
            AND (
-             LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+             LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
              OR
-             LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
+             LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
            )
-           ${partner ? `AND (LOWER("senderName") = '${partner}' OR LOWER("receiverName") = '${partner}')` : ''}
-           ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''}
-         ORDER BY "updatedAt" DESC LIMIT 1;`,
-        userEmail,
-        myNames
+           ${safePartner ? `AND (LOWER("senderName") = '${safePartner}' OR LOWER("receiverName") = '${safePartner}')` : ''}
+           ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''}
+         ORDER BY "updatedAt" DESC LIMIT 1;`
       );
 
       if (rows.length > 0) {
@@ -409,20 +460,17 @@ export async function PATCH(req: Request) {
           await prisma.$executeRawUnsafe(
             `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
              WHERE (
-               LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+               LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
              )
              AND "status" IN ('active', 'accepted')
-             ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : ''};`,
-            userEmail,
-            myNames
+             ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''};`
           );
           return NextResponse.json({ success: true, role: 'host', status: 'expired' }, { status: 200 });
         } else {
           // Guest leaves: Host remains in session, invitation reverts to 'active'
           // so the guest can still re-join anytime via notifications!
           await prisma.$executeRawUnsafe(
-            `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW() WHERE "id" = $1;`,
-            inv.id
+            `UPDATE "Invitations" SET "status" = 'active', "updatedAt" = NOW() WHERE "id" = '${escapeSql(inv.id)}';`
           );
           return NextResponse.json({ success: true, role: 'guest', status: 'active' }, { status: 200 });
         }
@@ -432,33 +480,30 @@ export async function PATCH(req: Request) {
 
     // 3. Explicit Expire / Cancel (action === 'end' or status === 'expired')
     const targetFilter = (target || type || '').toLowerCase().trim();
+    const safeTargetFilter = escapeSql(targetFilter);
 
     if (invitationId) {
       await prisma.$executeRawUnsafe(
-        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = $1;`,
-        invitationId
+        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW() WHERE "id" = '${escapeSql(invitationId)}';`
       );
     } else if (partner) {
       await prisma.$executeRawUnsafe(
         `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
          WHERE (
            (
-             (LOWER("senderName") = ANY($1::text[]) OR LOWER("senderEmail") = $2)
+             (LOWER("senderName") IN (${safeMyNamesSql}) OR LOWER("senderEmail") = '${safeUserEmail}')
              AND
-             (LOWER("receiverName") = $3 OR LOWER("receiverEmail") = $3)
+             (LOWER("receiverName") = '${safePartner}' OR LOWER("receiverEmail") = '${safePartner}')
            )
            OR
            (
-             (LOWER("receiverName") = ANY($1::text[]) OR LOWER("receiverEmail") = $2)
+             (LOWER("receiverName") IN (${safeMyNamesSql}) OR LOWER("receiverEmail") = '${safeUserEmail}')
              AND
-             (LOWER("senderName") = $3 OR LOWER("senderEmail") = $3)
+             (LOWER("senderName") = '${safePartner}' OR LOWER("senderEmail") = '${safePartner}')
            )
          )
          AND "status" IN ('active', 'accepted')
-         ${targetFilter ? `AND (LOWER("targetName") = '${targetFilter}' OR LOWER("type") = '${targetFilter}')` : ''};`,
-        myNames,
-        userEmail,
-        partner
+         ${safeTargetFilter ? `AND (LOWER("targetName") = '${safeTargetFilter}' OR LOWER("type") = '${safeTargetFilter}')` : ''};`
       );
     } else {
       // Host ends session without a specific partner (or partner already left):
@@ -466,14 +511,12 @@ export async function PATCH(req: Request) {
       await prisma.$executeRawUnsafe(
         `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
          WHERE (
-           LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+           LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
            OR
-           LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
+           LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
          )
          AND "status" IN ('active', 'accepted')
-         ${targetFilter ? `AND (LOWER("targetName") = '${targetFilter}' OR LOWER("type") = '${targetFilter}')` : ''};`,
-        userEmail,
-        myNames
+         ${safeTargetFilter ? `AND (LOWER("targetName") = '${safeTargetFilter}' OR LOWER("type") = '${safeTargetFilter}')` : ''};`
       );
     }
 

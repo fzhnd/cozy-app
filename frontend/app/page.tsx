@@ -787,10 +787,13 @@ export default function CozyApp() {
                 actionDesc = 'invited you to Photobooth';
               }
 
+              const senderFriend = friendsList.find(f => f.name.toLowerCase() === newIncoming.name?.toLowerCase());
+              const bannerAvatar = senderFriend?.avatar || newIncoming.avatar;
+
               setIncomingInviteBanner({
                 id: newIncoming.id,
                 name: newIncoming.name,
-                avatar: newIncoming.avatar,
+                avatar: bannerAvatar,
                 text: actionDesc,
                 title,
                 raw: newIncoming
@@ -805,30 +808,35 @@ export default function CozyApp() {
 
           setNotifications(prev => {
             const prevReadMap = new Map(prev.map(p => [p.id, p.read]));
-            const newRealInvites = res.invitations.map((inv: any) => ({
-              id: inv.id,
-              type: inv.type,
-              name: inv.name,
-              seed: inv.seed,
-              avatar: inv.avatar,
-              game: inv.game,
-              activity: inv.activity,
-              channel: inv.channel,
-              channelId: inv.channelId,
-              groupId: inv.groupId,
-              groupName: inv.groupName,
-              text: inv.type === 'game_invite' 
-                ? 'invited you to play' 
-                : (inv.type === 'channel_invite' 
-                  ? 'invited you to voice room' 
-                  : (inv.type === 'group_invite' 
-                    ? 'invited you to join group' 
-                    : 'invited you to')),
-              time: inv.time || 'Just now',
-              read: prevReadMap.has(inv.id) ? prevReadMap.get(inv.id) : (inv.read || false),
-              status: inv.status,
-              isRealInvite: true
-            }));
+            const newRealInvites = res.invitations.map((inv: any) => {
+              const friend = friendsList.find(f => f.name.toLowerCase() === inv.name?.toLowerCase());
+              const resolvedAvatar = friend?.avatar || inv.avatar;
+
+              return {
+                id: inv.id,
+                type: inv.type,
+                name: inv.name,
+                seed: inv.seed,
+                avatar: resolvedAvatar,
+                game: inv.game,
+                activity: inv.activity,
+                channel: inv.channel,
+                channelId: inv.channelId,
+                groupId: inv.groupId,
+                groupName: inv.groupName,
+                text: inv.type === 'game_invite' 
+                  ? 'invited you to play' 
+                  : (inv.type === 'channel_invite' 
+                    ? 'invited you to voice room' 
+                    : (inv.type === 'group_invite' 
+                      ? 'invited you to join group' 
+                      : 'invited you to')),
+                time: inv.time || 'Just now',
+                read: prevReadMap.has(inv.id) ? prevReadMap.get(inv.id) : (inv.read || false),
+                status: inv.status,
+                isRealInvite: true
+              };
+            });
 
             // Keep base notifications and merge real invitations
             const nonReal = prev.filter(p => !(p as any).isRealInvite);
@@ -2544,33 +2552,33 @@ export default function CozyApp() {
         roomMembers={[]}
       />
 
-      {/* Top-Right Incoming Invitation Popup Banner with [Join | Ignore] */}
+      {/* Top-Right Incoming Invitation Popup Banner with [Join] */}
       {incomingInviteBanner && (
         <div 
-          className="fixed top-6 right-6 z-[120] max-w-sm w-full bg-[#1B0F38]/95 border border-[#A577FF]/40 rounded-2xl p-4 shadow-[0_15px_50px_rgba(0,0,0,0.8),0_0_25px_rgba(165,119,255,0.25)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4 duration-300 select-none"
+          className="fixed top-5 right-5 z-[120] w-[260px] bg-[#1B0F38]/95 border border-[#A577FF]/40 rounded-xl p-2.5 shadow-[0_10px_35px_rgba(0,0,0,0.8),0_0_20px_rgba(165,119,255,0.2)] backdrop-blur-xl animate-in fade-in slide-in-from-top-3 duration-300 select-none"
         >
-          <div className="flex items-start gap-3.5">
+          <div className="flex items-start gap-2.5">
             <div className="relative shrink-0 mt-0.5">
               <img 
                 src={incomingInviteBanner.avatar} 
                 alt={incomingInviteBanner.name} 
-                className="w-11 h-11 rounded-full border-2 border-[#A577FF] object-cover shadow-[0_0_12px_rgba(165,119,255,0.4)]"
+                className="w-8 h-8 rounded-full border border-[#A577FF] object-cover shadow-[0_0_8px_rgba(165,119,255,0.4)]"
               />
-              <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-[#150A35] flex items-center justify-center">
-                <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
+              <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 rounded-full border border-[#150A35] flex items-center justify-center">
+                <span className="w-1 h-1 bg-white rounded-full animate-ping"></span>
               </span>
             </div>
 
             <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <span className="text-xs font-black text-white truncate">
+              <div className="flex items-center justify-between gap-1.5 mb-0.5">
+                <span className="text-[11px] font-bold text-white truncate">
                   {incomingInviteBanner.name}
                 </span>
-                <span className="text-[10px] text-[#c4a6ff] bg-[#A577FF]/15 border border-[#A577FF]/30 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0">
+                <span className="text-[9px] text-[#c4a6ff] bg-[#A577FF]/15 border border-[#A577FF]/30 px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-wider shrink-0">
                   {incomingInviteBanner.title}
                 </span>
               </div>
-              <p className="text-xs text-gray-300 leading-snug line-clamp-2 mb-3">
+              <p className="text-[10px] text-gray-300 leading-tight line-clamp-1 mb-2">
                 {incomingInviteBanner.text}
               </p>
 
@@ -2578,9 +2586,9 @@ export default function CozyApp() {
                 <button
                   type="button"
                   onClick={handleBannerJoin}
-                  className="w-full bg-[#A577FF] hover:bg-[#9161eb] text-white text-xs font-bold py-2 px-3 rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
+                  className="w-full bg-[#A577FF] hover:bg-[#9161eb] text-white text-[11px] font-bold py-1 px-2.5 rounded-lg shadow-sm transition-all cursor-pointer flex items-center justify-center gap-1 active:scale-95"
                 >
-                  <Check size={14} className="stroke-[2.5]" />
+                  <Check size={12} className="stroke-[2.5]" />
                   <span>Join</span>
                 </button>
               </div>
@@ -2589,10 +2597,10 @@ export default function CozyApp() {
             <button 
               type="button"
               onClick={handleBannerIgnore}
-              className="text-gray-400 hover:text-white transition-colors cursor-pointer p-0.5 -mr-1 -mt-1"
+              className="text-gray-400 hover:text-white transition-colors cursor-pointer p-0.5 -mr-1 -mt-0.5"
               title="Dismiss"
             >
-              <X size={14} />
+              <X size={12} />
             </button>
           </div>
         </div>

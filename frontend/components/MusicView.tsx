@@ -222,6 +222,38 @@ export default function MusicView({
     }
   }, []);
 
+  const currentUserNameRef = useRef(currentUserName);
+  currentUserNameRef.current = currentUserName;
+  const broadcastSyncRef = useRef(broadcastSync);
+  broadcastSyncRef.current = broadcastSync;
+
+  // Cleanup on unmount: if host, ensure the listening session is marked ended in the database
+  useEffect(() => {
+    return () => {
+      if (isHostRef.current || friendStateRef.current === 'waiting') {
+        const partnerName = activeFriendRef.current?.name;
+        try {
+          fetch('/api/invitations', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'end',
+              partnerName: partnerName || undefined,
+              senderName: currentUserNameRef.current,
+              type: 'activity',
+              targetName: 'Listening Together'
+            }),
+            keepalive: true
+          }).catch(() => {});
+        } catch (e) {}
+
+        try {
+          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together' });
+        } catch (e) {}
+      }
+    };
+  }, []);
+
   // Auto-connect if initialListeningWith is provided from notification
   useEffect(() => {
     if (initialListeningWith) {
@@ -241,7 +273,8 @@ export default function MusicView({
           type: 'activity',
           targetName: 'Listening Together',
           status: 'accepted'
-        })
+        }),
+        keepalive: true
       })
       .then(() => {
         broadcastSync('SESSION_JOINED', { partnerName: initialListeningWith.name, target: 'Listening Together' });
@@ -1372,7 +1405,8 @@ export default function MusicView({
                       senderName: currentUserName,
                       type: 'activity',
                       targetName: 'Listening Together'
-                    })
+                    }),
+                    keepalive: true
                   })
                   .then(() => {
                     broadcastSync('SESSION_LEFT', { partnerName: leavingPartner, target: 'Listening Together' });

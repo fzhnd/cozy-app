@@ -238,16 +238,57 @@ export default function WatchTogetherModal({
     }
   }, [roomMembers]);
 
+  const currentUserNameRef = useRef(currentUserName);
+  currentUserNameRef.current = currentUserName;
+  const broadcastSyncRef = useRef(broadcastSync);
+  broadcastSyncRef.current = broadcastSync;
+
+  // Cleanup on unmount: if host, ensure the session is marked ended in the database
+  useEffect(() => {
+    return () => {
+      if (isHostRef.current) {
+        const partnerName = lastPartnerNameRef.current;
+        try {
+          fetch('/api/invitations', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'end',
+              partnerName: partnerName || undefined,
+              senderName: currentUserNameRef.current,
+              type: 'activity',
+              targetName: 'Watch Together'
+            }),
+            keepalive: true
+          }).catch(() => {});
+        } catch (e) {}
+
+        try {
+          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together' });
+        } catch (e) {}
+      }
+    };
+  }, []);
+
   // Sync initialFriend if opening from invitation notification
   useEffect(() => {
     if (initialFriend) {
       isHostRef.current = false;
       lastPartnerNameRef.current = initialFriend.name;
+      const friend = friendsList?.find((f: any) => f.name.toLowerCase() === initialFriend.name.toLowerCase());
+      const resolvedAvatar = initialFriend.avatar 
+        || friend?.avatar 
+        || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
+        || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`;
+
       setJoinedUsers(prev => {
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
-          return [...prev, { name: initialFriend.name, avatar: initialFriend.avatar, status: 'joined' }];
+          return [...prev, { name: initialFriend.name, avatar: resolvedAvatar, status: 'joined' }];
         }
-        return prev;
+        return prev.map(u => u.name.toLowerCase() === initialFriend.name.toLowerCase()
+          ? { ...u, avatar: resolvedAvatar, status: 'joined' }
+          : u
+        );
       });
       showToast(`Joined Watch Together with ${initialFriend.name}`, 3000);
 
@@ -262,7 +303,8 @@ export default function WatchTogetherModal({
           type: 'activity', 
           targetName: 'Watch Together',
           status: 'accepted'
-        })
+        }),
+        keepalive: true
       })
       .then(() => {
         broadcastSync('SESSION_JOINED', { partnerName: initialFriend.name, target: 'Watch Together' });
@@ -271,7 +313,7 @@ export default function WatchTogetherModal({
         onConsumeInitialFriend();
       }
     }
-  }, [initialFriend, currentUserName, showToast, broadcastSync, onConsumeInitialFriend]);
+  }, [initialFriend, currentUserName, friendsList, showToast, broadcastSync, onConsumeInitialFriend]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
@@ -292,17 +334,28 @@ export default function WatchTogetherModal({
               // Both users connected!
               lastPartnerNameRef.current = session.partnerName;
               setJoinedUsers(prev => {
+                const friend = friendsList?.find((f: any) => f.name.toLowerCase() === session.partnerName.toLowerCase());
+                const resolvedAvatar = session.partnerImage 
+                  || friend?.avatar 
+                  || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
+                  || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`;
+
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (!exists) {
                   showToast(`${session.partnerName} joined Watch Together!`, 3000);
                   return [...prev, {
                     name: session.partnerName,
-                    avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`,
+                    avatar: resolvedAvatar,
                     status: 'joined'
                   }];
-                } else if (exists.status !== 'joined') {
-                  showToast(`${session.partnerName} accepted! Joined Watch Together`, 3000);
-                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'joined' } : u);
+                } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
+                  if (exists.status !== 'joined') {
+                    showToast(`${session.partnerName} accepted! Joined Watch Together`, 3000);
+                  }
+                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() 
+                    ? { ...u, avatar: resolvedAvatar, status: 'joined' } 
+                    : u
+                  );
                 }
                 return prev;
               });
@@ -339,14 +392,14 @@ export default function WatchTogetherModal({
     syncSession();
     const interval = setInterval(syncSession, 800);
     return () => clearInterval(interval);
-  }, [isOpen, currentUser.name, showToast, showLeaveToastOnce]);
+  }, [isOpen, currentUserName, friendsList, showToast, showLeaveToastOnce]);
 
   // Combine real friends, room members & mock friends for invite list
   const availableFriends = React.useMemo(() => {
     const list: Array<{ name: string; avatar: string; email?: string }> = [];
     if (friendsList && friendsList.length > 0) {
       friendsList.forEach(f => {
-        if (f.name !== currentUser.name && !list.some(item => item.name.toLowerCase() === f.name.toLowerCase())) {
+        if (f.name?.toLowerCase() !== currentUser.name?.toLowerCase() && !list.some(item => item.name.toLowerCase() === f.name.toLowerCase())) {
           list.push({
             name: f.name,
             email: (f as any).email,
@@ -421,7 +474,8 @@ export default function WatchTogetherModal({
         senderName: currentUserName,
         type: 'activity',
         targetName: 'Watch Together'
-      })
+      }),
+      keepalive: true
     })
     .then(() => {
       broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Watch Together' });
