@@ -195,7 +195,6 @@ export default function WatchTogetherModal({
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
       broadcastLocalSync({ type, sender: currentUserName, ...payload });
-      broadcastChannelRef.current?.postMessage({ type, sender: currentUserName, ...payload });
     } catch (e) {}
   }, [currentUserName]);
 
@@ -219,6 +218,7 @@ export default function WatchTogetherModal({
             || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
 
           lastPartnerNameRef.current = partnerName;
+          hasExitedRef.current = false;
           setJoinedUsers(prev => {
             const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
             if (!exists) {
@@ -280,6 +280,7 @@ export default function WatchTogetherModal({
   const broadcastSyncRef = useRef(broadcastSync);
   broadcastSyncRef.current = broadcastSync;
   const hasExitedRef = useRef(false);
+  const justJoinedTimeRef = useRef<number>(0);
 
   // Cleanup on unmount: if host, ensure the session is marked ended in the database
   useEffect(() => {
@@ -313,6 +314,8 @@ export default function WatchTogetherModal({
   useEffect(() => {
     if (initialFriend) {
       isHostRef.current = false;
+      hasExitedRef.current = false;
+      justJoinedTimeRef.current = Date.now();
       lastPartnerNameRef.current = initialFriend.name;
       const friend = friendsList?.find((f: any) => f.name.toLowerCase() === initialFriend.name.toLowerCase());
       const resolvedAvatar = initialFriend.avatar 
@@ -331,38 +334,22 @@ export default function WatchTogetherModal({
       });
       showToast(`Joined Watch Together with ${initialFriend.name}`, 3000);
 
-      // Immediately inform database that we joined Watch Together
-      fetch('/api/invitations', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: 'join', 
-          partnerName: initialFriend.name, 
-          senderName: currentUserName,
-          type: 'activity', 
-          targetName: 'Watch Together',
-          status: 'accepted'
-        }),
-        keepalive: true
-      })
-      .then(() => {
-        broadcastSync('SESSION_JOINED', { partnerName: initialFriend.name, target: 'Watch Together' });
-      })
       if (onConsumeInitialFriend) {
         onConsumeInitialFriend();
       }
     }
-  }, [initialFriend, currentUserName, friendsList, showToast, broadcastSync, onConsumeInitialFriend]);
+  }, [initialFriend, friendsList, showToast, onConsumeInitialFriend]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
     if (!isOpen) return;
 
     const syncSession = () => {
+      if (hasExitedRef.current) return;
       fetch(`/api/invitations?username=${encodeURIComponent(currentUserName)}`)
         .then(res => res.json())
         .then(res => {
-          if (!res.success) return;
+          if (!res.success || hasExitedRef.current) return;
 
           const session = res.activeWatchSession;
 
@@ -413,6 +400,11 @@ export default function WatchTogetherModal({
               });
             }
           } else {
+            // Grace period: If guest just joined via notification in the last 4 seconds, don't wipe them out while DB write commits!
+            if (Date.now() - justJoinedTimeRef.current < 4000) {
+              return;
+            }
+
             // Session expired or host ended
             setJoinedUsers(prev => {
               const otherUsers = prev.filter(u => u.name !== currentUserName);
@@ -467,6 +459,7 @@ export default function WatchTogetherModal({
     setIsInviteOpen(false);
     
     isHostRef.current = true;
+    hasExitedRef.current = false;
     lastPartnerNameRef.current = friend.name;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);

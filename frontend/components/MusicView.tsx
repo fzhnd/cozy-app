@@ -201,6 +201,7 @@ export default function MusicView({
   activeFriendRef.current = activeFriend;
   const isHostRef = useRef<boolean>(false);
   const syncSessionRef = useRef<(() => void) | null>(null);
+  const justJoinedTimeRef = useRef<number>(0);
 
   // Setup SSE and cross-window sync for instant Listening Together session events (<10ms)
   useEffect(() => {
@@ -220,6 +221,7 @@ export default function MusicView({
             || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
 
           lastPartnerNameRef.current = partnerName;
+          hasExitedRef.current = false;
           setActiveFriend({ name: partnerName, avatar: resolvedAvatar });
           setFriendState('joined');
           showToast(`${partnerName} joined! Listening together`, 3000);
@@ -294,35 +296,21 @@ export default function MusicView({
   useEffect(() => {
     if (initialListeningWith) {
       isHostRef.current = false;
+      hasExitedRef.current = false;
+      justJoinedTimeRef.current = Date.now();
       setActiveFriend(initialListeningWith);
       setFriendState('joined');
       showToast(`Connected: Listening together with ${initialListeningWith.name}`, 3500);
 
-      // Immediately update session status to accepted in backend
-      fetch('/api/invitations', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action: 'join', 
-          partnerName: initialListeningWith.name, 
-          senderName: currentUserName,
-          type: 'activity',
-          targetName: 'Listening Together',
-          status: 'accepted'
-        }),
-        keepalive: true
-      })
-      .then(() => {
-        broadcastSync('SESSION_JOINED', { partnerName: initialListeningWith.name, target: 'Listening Together' });
-      })
       if (onConsumeInitialFriend) {
         onConsumeInitialFriend();
       }
     }
-  }, [initialListeningWith, currentUserName, showToast, broadcastSync, onConsumeInitialFriend]);
+  }, [initialListeningWith, showToast, onConsumeInitialFriend]);
   
   const handleAddFriendClick = (friend: any) => {
     isHostRef.current = true;
+    hasExitedRef.current = false;
     setActiveFriend(friend);
     setFriendState('waiting');
 
@@ -375,6 +363,14 @@ export default function MusicView({
 
           const session = res.activeListeningSession;
 
+          // If user recently explicitly left the session, don't resurrect it
+          if (hasExitedRef.current) {
+            if (!session || session.status !== 'accepted') {
+              hasExitedRef.current = false; // DB has caught up
+            }
+            return;
+          }
+
           // Case 1: Active listening session exists in Supabase
           if (session) {
             isHostRef.current = !!session.isHost;
@@ -403,6 +399,11 @@ export default function MusicView({
               }
             }
           } else {
+            // Grace period: If guest just joined via notification in the last 4 seconds, don't wipe them out while DB write commits!
+            if (Date.now() - justJoinedTimeRef.current < 4000) {
+              return;
+            }
+
             // Case 2: No active session (host ended the session)
             if (friendStateRef.current === 'joined' || friendStateRef.current === 'waiting' || friendStateRef.current === 'alone') {
               const prevName = activeFriendRef.current?.name;

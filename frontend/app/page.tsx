@@ -735,18 +735,15 @@ export default function CozyApp() {
     raw: any;
   } | null>(null);
   const knownInviteIdsRef = useRef<Set<any>>(new Set());
+  const shownBannerIdsRef = useRef<Set<any>>(new Set());
+  const recentRealtimeEventsRef = useRef<Map<string, number>>(new Map());
   const isFirstFetchRef = useRef<boolean>(true);
   const bannerTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Cross-tab and server-side real-time broadcast helper
+  // Cross-tab and server-side real-time broadcast helper (broadcastLocalSync already manages BroadcastChannel + local listeners)
   const broadcastSync = (type: string, payload?: any) => {
     try {
       broadcastLocalSync({ type, sender: userName, ...payload });
-      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-        const bc = new BroadcastChannel('cozy_realtime_sync');
-        bc.postMessage({ type, sender: userName, ...payload });
-        bc.close();
-      }
     } catch (e) {}
   };
 
@@ -761,12 +758,18 @@ export default function CozyApp() {
           // Check for newly arrived active invitations directed to this user
           const activeInvites = res.invitations.filter((inv: any) => inv.status === 'active');
           if (isFirstFetchRef.current) {
-            activeInvites.forEach((inv: any) => knownInviteIdsRef.current.add(inv.id));
+            activeInvites.forEach((inv: any) => {
+              knownInviteIdsRef.current.add(inv.id);
+              shownBannerIdsRef.current.add(inv.id);
+            });
             isFirstFetchRef.current = false;
           } else {
-            const newIncoming = activeInvites.find((inv: any) => !knownInviteIdsRef.current.has(inv.id));
+            const newIncoming = activeInvites.find((inv: any) => 
+              !knownInviteIdsRef.current.has(inv.id) && !shownBannerIdsRef.current.has(inv.id)
+            );
             if (newIncoming) {
               knownInviteIdsRef.current.add(newIncoming.id);
+              shownBannerIdsRef.current.add(newIncoming.id);
               let title = 'Activity';
               let actionDesc = 'invited you to join';
               if (newIncoming.type === 'game_invite') {
@@ -854,6 +857,17 @@ export default function CozyApp() {
     const unsubscribe = subscribeRealtime((data: any) => {
       if (!data) return;
 
+      // Drop duplicate events received within 1.5 seconds (e.g. from both SSE and BroadcastChannel)
+      const eventSig = `${data.type}_${data.senderName || data.userName || ''}_${data.target || data.targetName || ''}_${data.action || ''}_${data.invitation?.id || ''}`;
+      const now = Date.now();
+      if (recentRealtimeEventsRef.current.has(eventSig)) {
+        const lastSeen = recentRealtimeEventsRef.current.get(eventSig)!;
+        if (now - lastSeen < 1500) {
+          return;
+        }
+      }
+      recentRealtimeEventsRef.current.set(eventSig, now);
+
       const currentEmail = session?.user?.email?.toLowerCase().trim() || '';
       const currentName = userName?.toLowerCase().trim() || '';
 
@@ -866,6 +880,16 @@ export default function CozyApp() {
         if (isForMe) {
           const inv = data.invitation || {};
           const title = inv.game || inv.channel || inv.activity || inv.targetName || data.target || data.targetName || data.activity || 'Activity';
+          const inviteKey = inv.id || `${data.senderName}_${title}`;
+
+          // If this invitation was already shown or dismissed, DO NOT POP UP AGAIN!
+          if (shownBannerIdsRef.current.has(inviteKey)) {
+            return;
+          }
+          shownBannerIdsRef.current.add(inviteKey);
+          knownInviteIdsRef.current.add(inviteKey);
+          if (inv.id) knownInviteIdsRef.current.add(inv.id);
+
           const resolvedType = (inv.type || data.type || (title.toLowerCase().includes('photobooth') ? 'photobooth' : 'activity')).toLowerCase();
           const actionDesc = resolvedType === 'game_invite'
             ? `invited you to play ${title}`
@@ -915,9 +939,6 @@ export default function CozyApp() {
 
           // Optimistically prepend to notifications list (0ms)!
           setNotifications(prev => [newInviteItem, ...prev.filter(p => p.id !== newInviteItem.id)]);
-
-          // Background sync
-          refreshInvitations();
         }
       }
 
@@ -1064,6 +1085,9 @@ export default function CozyApp() {
 
   const handleBannerJoin = () => {
     if (!incomingInviteBanner) return;
+    if (incomingInviteBanner.id) {
+      shownBannerIdsRef.current.add(incomingInviteBanner.id);
+    }
     const raw = incomingInviteBanner.raw;
     setIncomingInviteBanner(null);
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
@@ -1071,6 +1095,9 @@ export default function CozyApp() {
   };
 
   const handleBannerIgnore = () => {
+    if (incomingInviteBanner?.id) {
+      shownBannerIdsRef.current.add(incomingInviteBanner.id);
+    }
     setIncomingInviteBanner(null);
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
   };
