@@ -2462,7 +2462,7 @@ export default function CozyApp() {
           setIsWatchTogetherOpen(false);
           setActiveWatchFriend(null);
         }}
-        currentUser={{ name: userName, avatar: userImage }}
+        currentUser={{ name: userName, avatar: userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=A577FF` }}
         friendsList={friendsList}
         initialFriend={activeWatchFriend}
         onLeaveSession={() => setActiveWatchFriend(null)}

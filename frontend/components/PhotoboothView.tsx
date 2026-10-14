@@ -216,6 +216,22 @@ export default function PhotoboothView({
   ]);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [activeShotIndex, setActiveShotIndex] = useState<number | null>(null);
+  const isHostRef = useRef<boolean>(true);
+
+  // Keep creator's entry synchronized with logged-in user profile
+  useEffect(() => {
+    if (!userName) return;
+    const currentAvatar = userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=F9EBD8`;
+    setJoinedUsers(prev => {
+      const others = prev.filter(u => u.name !== userName && u.name !== 'User' && u.name !== 'You');
+      const myEntry: PhotoboothUser = {
+        name: userName,
+        avatar: currentAvatar,
+        status: 'joined'
+      };
+      return [myEntry, ...others];
+    });
+  }, [userName, userImage]);
 
   // Available Friends for Invitation
   const availableFriends = React.useMemo(() => {
@@ -256,6 +272,7 @@ export default function PhotoboothView({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLeaveToastTimeRef = useRef<number>(0);
+  const lastLeaveToastMsgRef = useRef<string>('');
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
 
@@ -270,8 +287,9 @@ export default function PhotoboothView({
 
   const showLeaveToastOnce = useCallback((msg: string) => {
     const now = Date.now();
-    if (now - lastLeaveToastTimeRef.current < 4000) return;
+    if (now - lastLeaveToastTimeRef.current < 5000 && lastLeaveToastMsgRef.current === msg) return;
     lastLeaveToastTimeRef.current = now;
+    lastLeaveToastMsgRef.current = msg;
     showToast(msg, 3500);
   }, [showToast]);
 
@@ -307,6 +325,7 @@ export default function PhotoboothView({
   // Sync initialFriend if joining from notification
   useEffect(() => {
     if (initialFriend) {
+      isHostRef.current = false;
       setJoinedUsers(prev => {
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
           return [...prev, {
@@ -354,6 +373,8 @@ export default function PhotoboothView({
           const session = res.activePhotoboothSession;
 
           if (session) {
+            isHostRef.current = !!session.isHost;
+
             if (session.status === 'accepted') {
               // Both users are joined!
               setJoinedUsers(prev => {
@@ -377,7 +398,7 @@ export default function PhotoboothView({
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (partnerUser && partnerUser.status === 'joined') {
                   showLeaveToastOnce(`${session.partnerName} left Photobooth`);
-                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
+                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'pending' } : u);
                 }
                 return prev;
               });
@@ -407,6 +428,7 @@ export default function PhotoboothView({
     if (joinedUsers.some(u => u.name.toLowerCase() === friend.name.toLowerCase())) return;
     setIsInviteOpen(false);
 
+    isHostRef.current = true;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
@@ -438,6 +460,7 @@ export default function PhotoboothView({
 
   const handleExitPhotobooth = () => {
     const partner = joinedUsers.find(u => u.name !== userName);
+    const isHost = isHostRef.current;
     lastLeaveToastTimeRef.current = Date.now();
     showToast("Left Photobooth", 3000);
 
@@ -445,7 +468,7 @@ export default function PhotoboothView({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'leave',
+        action: isHost ? 'end' : 'leave',
         partnerName: partner?.name,
         senderName: userName,
         type: 'photobooth',

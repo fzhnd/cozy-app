@@ -28,11 +28,11 @@ export async function GET(req: Request) {
 
     const myNames = Array.from(new Set([myDbName, mySessionName, queryUsername, myEmailPrefix].filter(Boolean)));
 
-    // Auto-expire active invitations older than 30 minutes
+    // Auto-expire active or accepted invitations older than 30 minutes
     await prisma.$executeRawUnsafe(`
       UPDATE "Invitations"
       SET "status" = 'expired', "updatedAt" = NOW()
-      WHERE "status" = 'active' AND "createdAt" < NOW() - INTERVAL '30 minutes';
+      WHERE "status" IN ('active', 'accepted') AND "updatedAt" < NOW() - INTERVAL '30 minutes';
     `);
 
     // Fetch invitations directed to me (matching by email OR any of my usernames)
@@ -205,7 +205,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Expire any existing active or accepted invitations between these two users for the same type/target
+    // Expire any existing active or accepted invitations involving the sender or receiver for the same activity
+    const senderNamesList = Array.from(new Set([senderName.toLowerCase(), senderEmail.split('@')[0], session.user.name?.toLowerCase().trim()].filter(Boolean))) as string[];
     await prisma.$executeRawUnsafe(
       `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
        WHERE (
@@ -215,23 +216,15 @@ export async function POST(req: Request) {
            OR LOWER("type") = LOWER($2)
          )
          AND (
-           (
-             (LOWER("senderEmail") = $3 OR LOWER("senderName") = $4)
-             AND
-             (LOWER("receiverName") = $5 OR (LOWER("receiverEmail") = $6 AND $6 != ''))
-           )
-           OR
-           (
-             (LOWER("receiverEmail") = $3 OR LOWER("receiverName") = $4)
-             AND
-             (LOWER("senderName") = $5 OR (LOWER("senderEmail") = $6 AND $6 != ''))
-           )
+           LOWER("senderEmail") = $3 OR LOWER("senderName") = ANY($4::text[])
+           OR LOWER("receiverEmail") = $3 OR LOWER("receiverName") = ANY($4::text[])
+           OR (LOWER("receiverName") = $5 OR (LOWER("receiverEmail") = $6 AND $6 != ''))
          )
          AND "status" IN ('active', 'accepted');`,
       type,
       targetName,
       senderEmail,
-      senderName.toLowerCase(),
+      senderNamesList,
       finalReceiverName.toLowerCase(),
       finalReceiverEmail
     );
@@ -438,7 +431,8 @@ export async function PATCH(req: Request) {
              (LOWER("senderName") = $3 OR LOWER("senderEmail") = $3)
            )
          )
-         AND "type" = COALESCE($4, 'activity');`,
+         AND "status" IN ('active', 'accepted')
+         ${target ? `AND (LOWER("targetName") = '${target}' OR LOWER("type") = '${target}')` : `AND "type" = COALESCE($4, 'activity')`};`,
         myNames,
         userEmail,
         partner,

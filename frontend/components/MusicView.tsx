@@ -63,6 +63,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLeaveToastTimeRef = useRef<number>(0);
+  const lastLeaveToastMsgRef = useRef<string>('');
 
   const showToast = useCallback((msg: string, duration = 3000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -75,9 +76,10 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
 
   const showLeaveToastOnce = useCallback((msg: string) => {
     const now = Date.now();
-    // Ignore duplicate leave or ended toasts within 4 seconds
-    if (now - lastLeaveToastTimeRef.current < 4000) return;
+    // Ignore duplicate leave or ended toasts within 5 seconds
+    if (now - lastLeaveToastTimeRef.current < 5000 && lastLeaveToastMsgRef.current === msg) return;
     lastLeaveToastTimeRef.current = now;
+    lastLeaveToastMsgRef.current = msg;
     showToast(msg, 3500);
   }, [showToast]);
 
@@ -185,6 +187,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
   friendStateRef.current = friendState;
   const activeFriendRef = useRef(activeFriend);
   activeFriendRef.current = activeFriend;
+  const isHostRef = useRef<boolean>(false);
   const syncSessionRef = useRef<(() => void) | null>(null);
 
   // Setup BroadcastChannel listener for instant cross-tab sync
@@ -213,6 +216,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
   // Auto-connect if initialListeningWith is provided from notification
   useEffect(() => {
     if (initialListeningWith) {
+      isHostRef.current = false;
       setActiveFriend(initialListeningWith);
       setFriendState('joined');
       showToast(`Connected: Listening together with ${initialListeningWith.name}`, 3500);
@@ -238,6 +242,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
   }, [initialListeningWith, currentUserName, showToast, broadcastSync]);
   
   const handleAddFriendClick = (friend: any) => {
+    isHostRef.current = true;
     setActiveFriend(friend);
     setFriendState('waiting');
 
@@ -282,6 +287,8 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
 
           // Case 1: Active listening session exists in Supabase
           if (session) {
+            isHostRef.current = !!session.isHost;
+
             if (session.status === 'accepted') {
               // Both users are joined!
               if (friendStateRef.current !== 'joined') {
@@ -295,13 +302,21 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
               }
             } else if (session.status === 'active') {
               // Session is active (host is in room, but partner has left or not joined yet)
-              if (friendStateRef.current === 'joined') {
-                // Partner left! Remove icon immediately on host's screen
-                const prevName = activeFriendRef.current?.name || session.partnerName;
-                setFriendState('none');
-                setActiveFriend(null);
-                if (onLeaveSession) onLeaveSession();
-                showLeaveToastOnce(`${prevName} left the listening session`);
+              if (session.isHost) {
+                const partnerObj = friendsList.find(f => f.name.toLowerCase() === session.partnerName.toLowerCase()) || {
+                  name: session.partnerName,
+                  avatar: session.partnerImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`
+                };
+                if (friendStateRef.current === 'joined') {
+                  // Partner left! Transition back to waiting (pulsing ring), keep leave button visible!
+                  const prevName = activeFriendRef.current?.name || session.partnerName;
+                  setActiveFriend(partnerObj);
+                  setFriendState('waiting');
+                  showLeaveToastOnce(`${prevName} left the listening session`);
+                } else if (friendStateRef.current === 'none') {
+                  setActiveFriend(partnerObj);
+                  setFriendState('waiting');
+                }
               }
             }
           } else {
@@ -1331,6 +1346,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
                 onClick={() => { 
                   const leavingPartner = activeFriend?.name;
                   const wasWaiting = friendState === 'waiting';
+                  const isHost = isHostRef.current || wasWaiting;
                   setFriendState('none'); 
                   setActiveFriend(null);
                   if (onLeaveSession) onLeaveSession();
@@ -1340,7 +1356,7 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                      action: wasWaiting ? 'end' : 'leave', 
+                      action: isHost ? 'end' : 'leave', 
                       partnerName: leavingPartner, 
                       senderName: currentUserName,
                       type: 'activity',

@@ -128,12 +128,15 @@ interface WatchTogetherModalProps {
 export default function WatchTogetherModal({
   isOpen,
   onClose,
-  currentUser = { name: 'You', avatar: 'https://api.dicebear.com/7.x/adventurer/svg?seed=Leo' },
+  currentUser = { name: 'You', avatar: '' },
   roomMembers = [],
   friendsList = [],
   initialFriend,
   onLeaveSession
 }: WatchTogetherModalProps) {
+  const currentUserName = currentUser?.name || 'You';
+  const currentUserAvatar = currentUser?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${currentUserName}&backgroundColor=A577FF`;
+
   const [searchQuery, setSearchQuery] = useState('');
   const [activeVideo, setActiveVideo] = useState<WatchVideo | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -141,14 +144,32 @@ export default function WatchTogetherModal({
 
   // Listening Together style: User Avatars with pending/joined status & Invite Dropdown
   const [joinedUsers, setJoinedUsers] = useState<WatchUser[]>([
-    { ...currentUser, status: 'joined' }
+    { name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: true }
   ]);
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLeaveToastTimeRef = useRef<number>(0);
+  const lastLeaveToastMsgRef = useRef<string>('');
+  const isHostRef = useRef<boolean>(true);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
+
+  // Keep host user entry synchronized with current logged-in user
+  useEffect(() => {
+    if (!currentUserName) return;
+    const resolvedAvatar = currentUser?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${currentUserName}&backgroundColor=A577FF`;
+    setJoinedUsers(prev => {
+      const others = prev.filter(u => u.name !== currentUserName && u.name !== 'You' && u.name !== 'User');
+      const myEntry: WatchUser = {
+        name: currentUserName,
+        avatar: resolvedAvatar,
+        status: 'joined',
+        isHost: true
+      };
+      return [myEntry, ...others];
+    });
+  }, [isOpen, currentUserName, currentUser?.avatar]);
 
   const showToast = useCallback((msg: string, duration = 3000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -161,16 +182,17 @@ export default function WatchTogetherModal({
 
   const showLeaveToastOnce = useCallback((msg: string) => {
     const now = Date.now();
-    if (now - lastLeaveToastTimeRef.current < 4000) return;
+    if (now - lastLeaveToastTimeRef.current < 5000 && lastLeaveToastMsgRef.current === msg) return;
     lastLeaveToastTimeRef.current = now;
+    lastLeaveToastMsgRef.current = msg;
     showToast(msg, 3500);
   }, [showToast]);
 
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
-      broadcastChannelRef.current?.postMessage({ type, sender: currentUser.name, ...payload });
+      broadcastChannelRef.current?.postMessage({ type, sender: currentUserName, ...payload });
     } catch (e) {}
-  }, [currentUser.name]);
+  }, [currentUserName]);
 
   // Setup BroadcastChannel for instant cross-tab sync
   useEffect(() => {
@@ -216,6 +238,7 @@ export default function WatchTogetherModal({
   // Sync initialFriend if opening from invitation notification
   useEffect(() => {
     if (initialFriend) {
+      isHostRef.current = false;
       setJoinedUsers(prev => {
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
           return [...prev, { name: initialFriend.name, avatar: initialFriend.avatar, status: 'joined' }];
@@ -231,7 +254,7 @@ export default function WatchTogetherModal({
         body: JSON.stringify({ 
           action: 'join', 
           partnerName: initialFriend.name, 
-          senderName: currentUser.name,
+          senderName: currentUserName,
           type: 'activity', 
           targetName: 'Watch Together',
           status: 'accepted'
@@ -242,14 +265,14 @@ export default function WatchTogetherModal({
       })
       .catch(e => {});
     }
-  }, [initialFriend, currentUser.name, showToast, broadcastSync]);
+  }, [initialFriend, currentUserName, showToast, broadcastSync]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
     if (!isOpen) return;
 
     const syncSession = () => {
-      fetch(`/api/invitations?username=${encodeURIComponent(currentUser.name)}`)
+      fetch(`/api/invitations?username=${encodeURIComponent(currentUserName)}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success) return;
@@ -257,6 +280,8 @@ export default function WatchTogetherModal({
           const session = res.activeWatchSession;
 
           if (session) {
+            isHostRef.current = !!session.isHost;
+
             if (session.status === 'accepted') {
               // Both users connected!
               setJoinedUsers(prev => {
@@ -280,7 +305,7 @@ export default function WatchTogetherModal({
                 const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
                 if (partnerUser && partnerUser.status === 'joined') {
                   showLeaveToastOnce(`${session.partnerName} left Watch Together`);
-                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
+                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() ? { ...u, status: 'pending' } : u);
                 }
                 return prev;
               });
@@ -288,10 +313,10 @@ export default function WatchTogetherModal({
           } else {
             // Session expired or host ended
             setJoinedUsers(prev => {
-              const otherUsers = prev.filter(u => u.name !== currentUser.name);
+              const otherUsers = prev.filter(u => u.name !== currentUserName);
               if (otherUsers.length > 0) {
                 showLeaveToastOnce(`Watch Together session ended`);
-                return prev.filter(u => u.name === currentUser.name);
+                return prev.filter(u => u.name === currentUserName);
               }
               return prev;
             });
@@ -338,6 +363,7 @@ export default function WatchTogetherModal({
   const handleInviteFriend = (friend: { name: string; avatar: string; email?: string }) => {
     if (joinedUsers.some(u => u.name.toLowerCase() === friend.name.toLowerCase())) return;
     
+    isHostRef.current = true;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
@@ -348,7 +374,7 @@ export default function WatchTogetherModal({
       body: JSON.stringify({
         receiverName: friend.name,
         receiverEmail: friend.email,
-        senderName: currentUser.name,
+        senderName: currentUserName,
         type: 'activity',
         targetName: 'Watch Together'
       })
@@ -368,7 +394,8 @@ export default function WatchTogetherModal({
   };
 
   const handleCloseModal = () => {
-    const partner = joinedUsers.find(u => u.name !== currentUser.name);
+    const partner = joinedUsers.find(u => u.name !== currentUserName);
+    const isHost = isHostRef.current || joinedUsers.some(u => u.name === currentUserName && u.isHost);
     lastLeaveToastTimeRef.current = Date.now();
     showToast("Left Watch Together", 3000);
 
@@ -376,9 +403,9 @@ export default function WatchTogetherModal({
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        action: 'leave',
+        action: isHost ? 'end' : 'leave',
         partnerName: partner?.name,
-        senderName: currentUser.name,
+        senderName: currentUserName,
         type: 'activity',
         targetName: 'Watch Together'
       })
