@@ -122,6 +122,7 @@ interface WatchTogetherModalProps {
   roomMembers?: Array<{ name: string; avatar: string; isHost?: boolean }>;
   friendsList?: any[];
   initialFriend?: any;
+  onConsumeInitialFriend?: () => void;
   onLeaveSession?: () => void;
 }
 
@@ -132,6 +133,7 @@ export default function WatchTogetherModal({
   roomMembers = [],
   friendsList = [],
   initialFriend,
+  onConsumeInitialFriend,
   onLeaveSession
 }: WatchTogetherModalProps) {
   const currentUserName = currentUser?.name || 'You';
@@ -263,9 +265,11 @@ export default function WatchTogetherModal({
       .then(() => {
         broadcastSync('SESSION_JOINED', { partnerName: initialFriend.name, target: 'Watch Together' });
       })
-      .catch(e => {});
+      if (onConsumeInitialFriend) {
+        onConsumeInitialFriend();
+      }
     }
-  }, [initialFriend, currentUserName, showToast, broadcastSync]);
+  }, [initialFriend, currentUserName, showToast, broadcastSync, onConsumeInitialFriend]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
@@ -362,6 +366,7 @@ export default function WatchTogetherModal({
 
   const handleInviteFriend = (friend: { name: string; avatar: string; email?: string }) => {
     if (joinedUsers.some(u => u.name.toLowerCase() === friend.name.toLowerCase())) return;
+    setIsInviteOpen(false);
     
     isHostRef.current = true;
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)

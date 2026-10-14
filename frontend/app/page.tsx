@@ -724,6 +724,19 @@ export default function CozyApp() {
   const [activePhotoboothFriend, setActivePhotoboothFriend] = useState<any>(null);
   const [toastNotification, setToastNotification] = useState<string | null>(null);
 
+  // Top-Right Incoming Invitation Popup Banner State [Join | Ignore]
+  const [incomingInviteBanner, setIncomingInviteBanner] = useState<{
+    id: any;
+    name: string;
+    avatar: string;
+    text: string;
+    title: string;
+    raw: any;
+  } | null>(null);
+  const knownInviteIdsRef = useRef<Set<any>>(new Set());
+  const isFirstFetchRef = useRef<boolean>(true);
+  const bannerTimerRef = useRef<NodeJS.Timeout | null>(null);
+
   // Cross-tab broadcast helper
   const broadcastSync = (type: string, payload?: any) => {
     try {
@@ -743,6 +756,53 @@ export default function CozyApp() {
       .then(res => res.json())
       .then(res => {
         if (res.success && Array.isArray(res.invitations)) {
+          // Check for newly arrived active invitations directed to this user
+          const activeInvites = res.invitations.filter((inv: any) => inv.status === 'active');
+          if (isFirstFetchRef.current) {
+            activeInvites.forEach((inv: any) => knownInviteIdsRef.current.add(inv.id));
+            isFirstFetchRef.current = false;
+          } else {
+            const newIncoming = activeInvites.find((inv: any) => !knownInviteIdsRef.current.has(inv.id));
+            if (newIncoming) {
+              knownInviteIdsRef.current.add(newIncoming.id);
+              let title = 'Activity';
+              let actionDesc = 'invited you to join';
+              if (newIncoming.type === 'game_invite') {
+                title = newIncoming.game || 'Game';
+                actionDesc = `invited you to play ${newIncoming.game || 'Game'}`;
+              } else if (newIncoming.type === 'channel_invite') {
+                title = newIncoming.channel || 'Voice Room';
+                actionDesc = `invited you to voice room ${newIncoming.channel || 'Voice Room'}`;
+              } else if (newIncoming.type === 'group_invite') {
+                title = newIncoming.groupName || 'Group';
+                actionDesc = `invited you to join group ${newIncoming.groupName || 'Group'}`;
+              } else if (newIncoming.activity === 'Watch Together') {
+                title = 'Watch Together';
+                actionDesc = 'invited you to Watch Together';
+              } else if (newIncoming.activity === 'Listening Together') {
+                title = 'Listening Together';
+                actionDesc = 'invited you to Listening Together';
+              } else if (newIncoming.type === 'photobooth' || newIncoming.activity === 'Photobooth') {
+                title = 'Photobooth';
+                actionDesc = 'invited you to Photobooth';
+              }
+
+              setIncomingInviteBanner({
+                id: newIncoming.id,
+                name: newIncoming.name,
+                avatar: newIncoming.avatar,
+                text: actionDesc,
+                title,
+                raw: newIncoming
+              });
+
+              if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+              bannerTimerRef.current = setTimeout(() => {
+                setIncomingInviteBanner(null);
+              }, 12000);
+            }
+          }
+
           setNotifications(prev => {
             const prevReadMap = new Map(prev.map(p => [p.id, p.read]));
             const newRealInvites = res.invitations.map((inv: any) => ({
@@ -872,6 +932,19 @@ export default function CozyApp() {
     }
 
     return { isLive: false, buttonText: 'Expired' };
+  };
+
+  const handleBannerJoin = () => {
+    if (!incomingInviteBanner) return;
+    const raw = incomingInviteBanner.raw;
+    setIncomingInviteBanner(null);
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    handleJoinInvite(raw);
+  };
+
+  const handleBannerIgnore = () => {
+    setIncomingInviteBanner(null);
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
   };
 
   const handleJoinInvite = (n: any) => {
@@ -2240,6 +2313,7 @@ export default function CozyApp() {
             onGoHome={() => setActiveTab('home')} 
             friendsList={friendsList}
             initialListeningWith={activeListeningFriend}
+            onConsumeInitialFriend={() => setActiveListeningFriend(null)}
             onLeaveSession={() => setActiveListeningFriend(null)}
           />
         )}
@@ -2465,9 +2539,71 @@ export default function CozyApp() {
         currentUser={{ name: userName, avatar: userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=A577FF` }}
         friendsList={friendsList}
         initialFriend={activeWatchFriend}
+        onConsumeInitialFriend={() => setActiveWatchFriend(null)}
         onLeaveSession={() => setActiveWatchFriend(null)}
         roomMembers={[]}
       />
+
+      {/* Top-Right Incoming Invitation Popup Banner with [Join | Ignore] */}
+      {incomingInviteBanner && (
+        <div 
+          className="fixed top-6 right-6 z-[120] max-w-sm w-full bg-[#1B0F38]/95 border border-[#A577FF]/40 rounded-2xl p-4 shadow-[0_15px_50px_rgba(0,0,0,0.8),0_0_25px_rgba(165,119,255,0.25)] backdrop-blur-xl animate-in fade-in slide-in-from-top-4 duration-300 select-none"
+        >
+          <div className="flex items-start gap-3.5">
+            <div className="relative shrink-0 mt-0.5">
+              <img 
+                src={incomingInviteBanner.avatar} 
+                alt={incomingInviteBanner.name} 
+                className="w-11 h-11 rounded-full border-2 border-[#A577FF] object-cover shadow-[0_0_12px_rgba(165,119,255,0.4)]"
+              />
+              <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-green-500 rounded-full border-2 border-[#150A35] flex items-center justify-center">
+                <span className="w-1.5 h-1.5 bg-white rounded-full animate-ping"></span>
+              </span>
+            </div>
+
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className="text-xs font-black text-white truncate">
+                  {incomingInviteBanner.name}
+                </span>
+                <span className="text-[10px] text-[#c4a6ff] bg-[#A577FF]/15 border border-[#A577FF]/30 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0">
+                  {incomingInviteBanner.title}
+                </span>
+              </div>
+              <p className="text-xs text-gray-300 leading-snug line-clamp-2 mb-3">
+                {incomingInviteBanner.text}
+              </p>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleBannerJoin}
+                  className="flex-1 bg-[#A577FF] hover:bg-[#9161eb] text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
+                >
+                  <Check size={14} className="stroke-[2.5]" />
+                  <span>Join</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleBannerIgnore}
+                  className="bg-white/10 hover:bg-white/15 text-gray-300 hover:text-white text-xs font-semibold py-1.5 px-3 rounded-xl transition-all cursor-pointer active:scale-95"
+                >
+                  Ignore
+                </button>
+              </div>
+            </div>
+
+            <button 
+              type="button"
+              onClick={handleBannerIgnore}
+              className="text-gray-400 hover:text-white transition-colors cursor-pointer p-0.5 -mr-1 -mt-1"
+              title="Dismiss"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Toast Notification for Expired/Active session info */}
       {toastNotification && (

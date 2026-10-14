@@ -14,10 +14,19 @@ interface MusicViewProps {
   onGoHome?: () => void;
   friendsList?: any[];
   initialListeningWith?: any;
+  onConsumeInitialFriend?: () => void;
   onLeaveSession?: () => void;
 }
 
-export default function MusicView({ userImage, userName, onGoHome, friendsList = [], initialListeningWith, onLeaveSession }: MusicViewProps) {
+export default function MusicView({ 
+  userImage, 
+  userName, 
+  onGoHome, 
+  friendsList = [], 
+  initialListeningWith, 
+  onConsumeInitialFriend,
+  onLeaveSession 
+}: MusicViewProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -237,9 +246,11 @@ export default function MusicView({ userImage, userName, onGoHome, friendsList =
       .then(() => {
         broadcastSync('SESSION_JOINED', { partnerName: initialListeningWith.name, target: 'Listening Together' });
       })
-      .catch(e => {});
+      if (onConsumeInitialFriend) {
+        onConsumeInitialFriend();
+      }
     }
-  }, [initialListeningWith, currentUserName, showToast, broadcastSync]);
+  }, [initialListeningWith, currentUserName, showToast, broadcastSync, onConsumeInitialFriend]);
   
   const handleAddFriendClick = (friend: any) => {
     isHostRef.current = true;

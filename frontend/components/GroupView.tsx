@@ -1137,37 +1137,19 @@ export default function GroupView({
                     <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center text-[#A577FF] shrink-0">
                       {renderChannelIcon(chanIcon, 15)}
                     </div>
-                    <div className="min-w-0 flex-1 flex items-center gap-1.5">
-                      <span className="text-xs font-bold text-gray-300 group-hover:text-white truncate">
-                        {chanCleanName}
-                      </span>
-                      {chan.isPublic && (
-                        <span className="text-[9px] bg-blue-500/20 text-blue-400 font-bold px-1.5 py-0.2 rounded border border-blue-500/30 shrink-0">
-                          Public ✓
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-xs font-bold text-gray-300 group-hover:text-white truncate">
+                      {chanCleanName}
+                    </span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
-                    {chan.activeUsers && chan.activeUsers > 0 && (
-                      <span className="text-[10px] bg-green-500/20 text-green-400 font-bold px-1.5 py-0.5 rounded-full border border-green-500/30">
-                        {chan.activeUsers}
-                      </span>
-                    )}
-
-                    {/* Quick Invite to Channel for Anyone */}
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveChannel({ ...chan, icon: chanIcon, name: chanCleanName });
-                        setIsInviteModalOpen(true);
-                      }}
-                      className="w-6 h-6 rounded-md flex items-center justify-center text-gray-400 hover:text-[#A577FF] hover:bg-white/10 transition-colors cursor-pointer"
-                      title={`Invite friends to #${chanCleanName}`}
-                    >
-                      <UserPlus size={13} />
-                    </button>
+                  <div className="flex items-center gap-2 shrink-0 ml-2" onClick={(e) => e.stopPropagation()}>
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${
+                      (chan.activeUsers && chan.activeUsers > 0)
+                        ? 'bg-green-500/20 text-green-400 border-green-500/30'
+                        : 'bg-white/5 text-gray-400 border-white/10'
+                    }`}>
+                      {chan.activeUsers || 0}
+                    </span>
 
                     {/* Three Dots for Admin & Owner */}
                     {isCurrentUserAdmin && (

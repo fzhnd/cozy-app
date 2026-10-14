@@ -4,6 +4,9 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
 import { ensureDatabaseTables } from "@/lib/dbInit";
 
+let lastExpiredCleanup = 0;
+const userNameCache = new Map<string, { name: string; expiry: number }>();
+
 // GET: Retrieve invitations and active activity sessions for current user
 export async function GET(req: Request) {
   try {
@@ -15,11 +18,21 @@ export async function GET(req: Request) {
     await ensureDatabaseTables();
 
     const myEmail = session.user.email.toLowerCase().trim();
-    const dbSender = await prisma.user.findUnique({
-      where: { email: myEmail },
-      select: { name: true }
-    });
-    const myDbName = dbSender?.name?.toLowerCase().trim() || "";
+    
+    // Cached user name lookup to avoid DB roundtrips on every 800ms poll
+    let myDbName = "";
+    const cachedUser = userNameCache.get(myEmail);
+    if (cachedUser && cachedUser.expiry > Date.now()) {
+      myDbName = cachedUser.name;
+    } else {
+      const dbSender = await prisma.user.findUnique({
+        where: { email: myEmail },
+        select: { name: true }
+      });
+      myDbName = dbSender?.name?.toLowerCase().trim() || "";
+      userNameCache.set(myEmail, { name: myDbName, expiry: Date.now() + 120000 });
+    }
+
     const mySessionName = session.user.name?.toLowerCase().trim() || "";
     const myEmailPrefix = myEmail.split("@")[0];
 
@@ -28,23 +41,42 @@ export async function GET(req: Request) {
 
     const myNames = Array.from(new Set([myDbName, mySessionName, queryUsername, myEmailPrefix].filter(Boolean)));
 
-    // Auto-expire active or accepted invitations older than 30 minutes
-    await prisma.$executeRawUnsafe(`
-      UPDATE "Invitations"
-      SET "status" = 'expired', "updatedAt" = NOW()
-      WHERE "status" IN ('active', 'accepted') AND "updatedAt" < NOW() - INTERVAL '30 minutes';
-    `);
+    // Auto-expire active or accepted invitations older than 30 minutes (throttled to once every 2 minutes, non-blocking)
+    if (Date.now() - lastExpiredCleanup > 120000) {
+      lastExpiredCleanup = Date.now();
+      prisma.$executeRawUnsafe(`
+        UPDATE "Invitations"
+        SET "status" = 'expired', "updatedAt" = NOW()
+        WHERE "status" IN ('active', 'accepted') AND "updatedAt" < NOW() - INTERVAL '30 minutes';
+      `).catch(err => console.error("Auto-expire cleanup error:", err));
+    }
 
-    // Fetch invitations directed to me (matching by email OR any of my usernames)
-    const rows = await prisma.$queryRawUnsafe<any[]>(
+    // Consolidated single SELECT query returning all relevant invitations for current user
+    const allRows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "Invitations" 
-       WHERE (LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[]))
-       ORDER BY "createdAt" DESC LIMIT 50;`,
+       WHERE (
+         LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
+         OR 
+         LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
+       )
+       ORDER BY "createdAt" DESC LIMIT 60;`,
       myEmail,
       myNames
     );
 
-    const invitations = rows.map((r, idx) => ({
+    const isReceiver = (r: any) => {
+      const recEmail = r.receiverEmail?.toLowerCase()?.trim();
+      const recName = r.receiverName?.toLowerCase()?.trim();
+      return recEmail === myEmail || (recName && myNames.includes(recName));
+    };
+
+    const isSender = (r: any) => {
+      const sndEmail = r.senderEmail?.toLowerCase()?.trim();
+      const sndName = r.senderName?.toLowerCase()?.trim();
+      return sndEmail === myEmail || (sndName && myNames.includes(sndName));
+    };
+
+    const invitations = allRows.filter(isReceiver).map((r, idx) => ({
       id: r.id || `inv_${idx}`,
       senderEmail: r.senderEmail,
       name: r.senderName,
@@ -66,16 +98,7 @@ export async function GET(req: Request) {
       createdAt: r.createdAt
     }));
 
-    // Fetch invitations sent by current user
-    const sentRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Invitations" 
-       WHERE (LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[]))
-       ORDER BY "createdAt" DESC LIMIT 30;`,
-      myEmail,
-      myNames
-    );
-
-    const sentInvitations = sentRows.map((r, idx) => ({
+    const sentInvitations = allRows.filter(isSender).map((r, idx) => ({
       id: r.id || `inv_sent_${idx}`,
       senderEmail: r.senderEmail,
       name: r.senderName,
@@ -88,19 +111,10 @@ export async function GET(req: Request) {
       createdAt: r.createdAt
     }));
 
-    // Fetch all active sessions (listening together, watch together, photobooth)
-    const activeActivityRows = await prisma.$queryRawUnsafe<any[]>(
-      `SELECT * FROM "Invitations" 
-       WHERE "status" IN ('active', 'accepted')
-         AND (
-           LOWER("senderEmail") = $1 OR LOWER("senderName") = ANY($2::text[])
-           OR 
-           LOWER("receiverEmail") = $1 OR LOWER("receiverName") = ANY($2::text[])
-         )
-       ORDER BY "updatedAt" DESC LIMIT 50;`,
-      myEmail,
-      myNames
-    );
+    // Active activity rows sorted by latest updatedAt
+    const activeActivityRows = allRows
+      .filter(r => r.status === 'active' || r.status === 'accepted')
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
 
     const formatSession = (row: any) => {
       if (!row) return null;
