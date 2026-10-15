@@ -2,38 +2,26 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { prisma } from "@/lib/prisma";
-
-// Ensure PublicChannels table exists in Supabase PostgreSQL
-async function ensurePublicChannelsTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS "PublicChannels" (
-      "id" TEXT PRIMARY KEY,
-      "name" TEXT NOT NULL,
-      "icon" TEXT DEFAULT '🔊',
-      "groupId" TEXT NOT NULL,
-      "groupName" TEXT NOT NULL,
-      "groupIcon" TEXT DEFAULT '#1',
-      "creatorName" TEXT NOT NULL,
-      "creatorEmail" TEXT NOT NULL,
-      "activeUsers" INTEGER DEFAULT 0,
-      "isPublic" BOOLEAN DEFAULT true,
-      "createdAt" TIMESTAMP NOT NULL DEFAULT NOW(),
-      "updatedAt" TIMESTAMP NOT NULL DEFAULT NOW()
-    );
-    ALTER TABLE IF EXISTS "PublicChannels" ENABLE ROW LEVEL SECURITY;
-  `);
-}
+import { ensureDatabaseTables } from "@/lib/dbInit";
 
 // GET: Retrieve all community public channels across all users
 export async function GET() {
   try {
-    await ensurePublicChannelsTable();
-
     const rows = await prisma.$queryRawUnsafe<any[]>(
       `SELECT * FROM "PublicChannels" WHERE "isPublic" = true ORDER BY "updatedAt" DESC LIMIT 50;`
-    );
+    ).catch(async (err: any) => {
+      // If table doesn't exist yet, lazily initialize and retry once
+      if (err?.message?.includes("does not exist") || err?.code === "42P01") {
+        await ensureDatabaseTables();
+        return await prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM "PublicChannels" WHERE "isPublic" = true ORDER BY "updatedAt" DESC LIMIT 50;`
+        ).catch(() => []);
+      }
+      console.warn("PublicChannels query warning:", err?.message || err);
+      return [];
+    });
 
-    const channels = rows.map(r => ({
+    const channels = (rows || []).map(r => ({
       id: r.id,
       name: r.name,
       icon: r.icon || '🔊',
@@ -50,7 +38,7 @@ export async function GET() {
     return NextResponse.json({ success: true, channels }, { status: 200 });
   } catch (error: any) {
     console.error("GET PublicChannels error:", error);
-    return NextResponse.json({ success: false, channels: [], error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true, channels: [], error: error.message }, { status: 200 });
   }
 }
 
@@ -68,7 +56,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Channel and group details are required" }, { status: 400 });
     }
 
-    await ensurePublicChannelsTable();
+    await ensureDatabaseTables();
 
     const creatorEmail = session.user.email.toLowerCase().trim();
     const creatorName = session.user.name?.trim() || creatorEmail.split('@')[0];

@@ -18,8 +18,6 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, friends: [], pendingRequests: [], sentRequests: [] }, { status: 200 });
     }
 
-    await ensureDatabaseTables();
-
     const myEmail = session.user.email.toLowerCase().trim();
     const dbSender = await prisma.user.findUnique({
       where: { email: myEmail },

@@ -14,9 +14,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ message: "Password must be at least 8 characters long" }, { status: 400 });
     }
 
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanName = (name || cleanEmail.split("@")[0]).trim();
+
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
-      where: { email },
+    const existingUser = await prisma.user.findFirst({
+      where: { email: { equals: cleanEmail, mode: "insensitive" } },
     });
 
     if (existingUser) {
@@ -27,14 +30,14 @@ export async function POST(req: Request) {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Default random avatar like dicebear
-    const randomAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${name || email}&backgroundColor=F5F7FC`;
+    const randomAvatar = `https://api.dicebear.com/7.x/adventurer/svg?seed=${cleanName || cleanEmail}&backgroundColor=F5F7FC`;
 
     // Save to database
     const user = await prisma.user.create({
       data: {
-        email,
+        email: cleanEmail,
         password: hashedPassword,
-        name: name || email.split("@")[0],
+        name: cleanName,
         image: randomAvatar,
       },
     });

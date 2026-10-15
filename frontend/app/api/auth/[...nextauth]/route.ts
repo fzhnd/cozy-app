@@ -5,8 +5,6 @@ import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
 
-import { ensureDatabaseTables } from "@/lib/dbInit";
-
 export const authOptions: AuthOptions = {
   adapter: PrismaAdapter(prisma) as any,
   providers: [
@@ -26,10 +24,11 @@ export const authOptions: AuthOptions = {
         }
 
         try {
-          await ensureDatabaseTables();
-
-          const user = await prisma.user.findUnique({
-            where: { email: credentials.email }
+          const cleanEmail = credentials.email.toLowerCase().trim();
+          const user = await prisma.user.findFirst({
+            where: { email: { equals: cleanEmail, mode: "insensitive" } }
+          }) || await prisma.user.findUnique({
+            where: { email: credentials.email.trim() }
           });
 
           if (!user || !user.password) {
@@ -76,7 +75,6 @@ export const authOptions: AuthOptions = {
       }
       if (token.email) {
         try {
-          await ensureDatabaseTables();
           const dbUser = await prisma.user.findUnique({
             where: { email: token.email },
             select: { name: true, image: true }

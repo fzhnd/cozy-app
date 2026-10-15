@@ -22,8 +22,6 @@ export async function GET(req: Request) {
       return NextResponse.json({ success: true, invitations: [], sentInvitations: [] }, { status: 200 });
     }
 
-    await ensureDatabaseTables();
-
     const myEmail = session.user.email.toLowerCase().trim();
     
     // Cached user name lookup to avoid DB roundtrips on every 800ms poll

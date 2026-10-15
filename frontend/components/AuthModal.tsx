@@ -89,12 +89,15 @@ export default function AuthModal({
 
     setLoading(true);
 
+    const cleanEmail = email.trim();
+    const cleanUsername = username.trim();
+
     try {
       if (authMode === 'login') {
         // Mode Login
         const res = await signIn('credentials', {
           redirect: false,
-          email,
+          email: cleanEmail,
           password
         });
         
@@ -109,7 +112,7 @@ export default function AuthModal({
         const res = await fetch('/api/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: username, email, password })
+          body: JSON.stringify({ name: cleanUsername, email: cleanEmail, password })
         });
         
         const data = await res.json();
@@ -120,7 +123,7 @@ export default function AuthModal({
           // Auto login after successful sign up
           const signInRes = await signIn('credentials', {
             redirect: false,
-            email,
+            email: cleanEmail,
             password
           });
           
@@ -134,7 +137,7 @@ export default function AuthModal({
         const res = await fetch('/api/auth/reset-password', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, newPassword: password })
+          body: JSON.stringify({ email: cleanEmail, newPassword: password })
         });
 
         const data = await res.json();
