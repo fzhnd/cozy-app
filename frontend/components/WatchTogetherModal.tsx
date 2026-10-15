@@ -550,7 +550,27 @@ export default function WatchTogetherModal({
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
-    // Send persistent invitation to Supabase PostgreSQL
+    const tempInviteId = `watch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const invitePayload = {
+      id: tempInviteId,
+      receiverName: friend.name,
+      receiverEmail: friend.email,
+      senderName: currentUserName,
+      senderAvatar: currentUserAvatar,
+      target: 'Watch Together',
+      targetName: 'Watch Together',
+      activity: 'Watch Together',
+      type: 'activity',
+      timestamp: Date.now()
+    };
+
+    // Instant optimistic broadcast (<10ms)
+    broadcastSync('INVITE_SENT', {
+      ...invitePayload,
+      invitation: invitePayload
+    });
+
+    // Send persistent invitation to Supabase PostgreSQL in background
     fetch('/api/invitations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -562,20 +582,6 @@ export default function WatchTogetherModal({
         type: 'activity',
         targetName: 'Watch Together'
       })
-    })
-    .then(res => res.json())
-    .then((data) => {
-      broadcastSync('INVITE_SENT', {
-        receiverName: friend.name,
-        receiverEmail: friend.email,
-        senderName: currentUserName,
-        senderAvatar: currentUserAvatar,
-        target: 'Watch Together',
-        targetName: 'Watch Together',
-        activity: 'Watch Together',
-        type: 'activity',
-        invitation: data?.invitation
-      });
     })
     .catch(err => console.error("Error sending watch invitation:", err));
 

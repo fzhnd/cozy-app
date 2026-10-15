@@ -437,8 +437,9 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ success: true, message: "Invitation joined/accepted" }, { status: 200 });
     }
 
-    // 2. Participant Leaves (action === 'leave' or status === 'leave')
-    if (action === 'leave' || status === 'leave') {
+    // 2. Participant Leaves or Host Ends Session (action === 'leave' | 'end' | 'expired')
+    const isLeaveOrEnd = action === 'leave' || status === 'leave' || action === 'end' || status === 'end' || action === 'expired' || status === 'expired';
+    if (isLeaveOrEnd) {
       const channelId = body.channelId;
       const safeChannelId = channelId ? escapeSql(channelId) : '';
       
@@ -509,6 +510,7 @@ export async function PATCH(req: Request) {
       if (rows.length > 0) {
         const inv = rows[0];
         const isHost = (
+          action === 'end' ||
           inv.senderEmail?.toLowerCase() === userEmail ||
           myNames.includes(inv.senderName?.toLowerCase())
         );

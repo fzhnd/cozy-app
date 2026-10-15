@@ -385,14 +385,28 @@ export default function PhotoboothView({
 
   const cameraStatusRef = useRef(cameraStatus);
   cameraStatusRef.current = cameraStatus;
+  const departedPartnerNamesRef = useRef<Set<string>>(new Set());
 
-  // Broadcast camera status changes to partner
+  // Broadcast camera status changes & continuous heartbeat to partner while camera is ready
   useEffect(() => {
-    if (cameraStatus === 'ready') {
-      broadcastSync('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: true });
-    } else if (cameraStatus === 'error' || cameraStatus === 'denied') {
-      broadcastSync('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: false });
+    if (cameraStatus !== 'ready') {
+      if (cameraStatus === 'error' || cameraStatus === 'denied') {
+        broadcastSync('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: false });
+      }
+      return;
     }
+
+    // Immediately announce ready and query partner
+    broadcastSync('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: true });
+    broadcastSync('PHOTOBOOTH_QUERY_CAMERA_STATUS', {});
+
+    const interval = setInterval(() => {
+      if (cameraStatusRef.current === 'ready') {
+        broadcastSync('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: true });
+      }
+    }, 1200);
+
+    return () => clearInterval(interval);
   }, [cameraStatus, broadcastSync]);
 
   // Setup SSE and cross-window sync for instant Photobooth session events (<10ms)
@@ -416,6 +430,7 @@ export default function PhotoboothView({
 
           lastPartnerNameRef.current = partnerName;
           hasExitedRef.current = false;
+          departedPartnerNamesRef.current.delete(partnerName.toLowerCase().trim());
           setJoinedUsers(prev => {
             const partnerIsHost = !isHostRef.current;
             const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
@@ -459,6 +474,9 @@ export default function PhotoboothView({
         setRetakeModalState(null);
         setIsPartnerCameraReady(false);
 
+        if (leaver) departedPartnerNamesRef.current.add(leaver);
+        if (eventPartner) departedPartnerNamesRef.current.add(eventPartner);
+
         if (data.action === 'end') {
           showLeaveToastOnce('Photobooth session ended by host');
           // Host ended session: only current user remains!
@@ -492,11 +510,21 @@ export default function PhotoboothView({
         }
       }
 
-      // 3. Camera Readiness Sync
-      if (data.type === 'PHOTOBOOTH_CAMERA_STATUS') {
+      // 3. Camera Readiness Sync & Handshake
+      if (data.type === 'PHOTOBOOTH_CAMERA_STATUS' || data.type === 'PHOTOBOOTH_CAMERA_STATUS_ACK') {
         const isMeSender = (data.senderName || data.userName || data.sender || '').toLowerCase().trim() === current;
         if (!isMeSender) {
           setIsPartnerCameraReady(!!data.cameraReady);
+          if (data.type === 'PHOTOBOOTH_CAMERA_STATUS' && cameraStatusRef.current === 'ready' && data.cameraReady) {
+            broadcastSyncRef.current('PHOTOBOOTH_CAMERA_STATUS_ACK', { cameraReady: true });
+          }
+        }
+      }
+
+      if (data.type === 'PHOTOBOOTH_QUERY_CAMERA_STATUS') {
+        const isMeSender = (data.senderName || data.userName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender && cameraStatusRef.current === 'ready') {
+          broadcastSyncRef.current('PHOTOBOOTH_CAMERA_STATUS', { cameraReady: true });
         }
       }
 
@@ -553,10 +581,10 @@ export default function PhotoboothView({
         if (!isMeSender) {
           if (data.accepted) {
             executeResetForRetakeRef.current();
-            showToast(`${data.responderName || 'Partner'} menyetujui! Foto diulang dari awal.`, 3000);
+            showToast(`${data.responderName || 'Partner'} agreed! Restarting photos from the beginning.`, 3000);
           } else {
             setRetakeModalState(null);
-            showToast(`${data.responderName || 'Partner'} menolak foto ulang`, 3000);
+            showToast(`${data.responderName || 'Partner'} declined retake request`, 3000);
           }
         }
       }
@@ -566,7 +594,7 @@ export default function PhotoboothView({
         const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
         if (!isMeSender) {
           setRetakeModalState(null);
-          showToast('Permintaan foto ulang dibatalkan', 2500);
+          showToast('Retake request cancelled', 2500);
         }
       }
 
@@ -589,7 +617,7 @@ export default function PhotoboothView({
             }
             return prev;
           });
-          showToast(`${data.senderName || 'Partner'} mengupload foto`, 2500);
+          showToast(`${data.senderName || 'Partner'} uploaded a photo`, 2500);
         }
       }
 
@@ -727,6 +755,10 @@ export default function PhotoboothView({
             isHostRef.current = !!session.isHost;
 
             if (session.status === 'accepted') {
+              const partnerLower = (session.partnerName || '').toLowerCase().trim();
+              if (departedPartnerNamesRef.current.has(partnerLower)) {
+                return;
+              }
               // Both users are joined!
               lastPartnerNameRef.current = session.partnerName;
               setJoinedUsers(prev => {
@@ -812,11 +844,32 @@ export default function PhotoboothView({
     isHostRef.current = true;
     hasExitedRef.current = false;
     justInvitedTimeRef.current = Date.now();
-    lastPartnerNameRef.current = friend.name;
+    departedPartnerNamesRef.current.delete(friend.name.toLowerCase().trim());
     // 1. Add friend with status 'pending' (blinking/pulsing like Listening Together)
     setJoinedUsers(prev => [...prev, { name: friend.name, avatar: friend.avatar, status: 'pending' }]);
 
-    // Send persistent invitation to Supabase PostgreSQL
+    const tempInviteId = `photo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const invitePayload = {
+      id: tempInviteId,
+      receiverName: friend.name,
+      receiverEmail: friend.email,
+      senderName: userName,
+      senderAvatar: currentUserAvatar,
+      senderImage: currentUserAvatar,
+      target: 'Photobooth',
+      targetName: 'Photobooth',
+      activity: 'Photobooth',
+      type: 'photobooth',
+      timestamp: Date.now()
+    };
+
+    // Instant optimistic broadcast (<10ms)
+    broadcastSync('INVITE_SENT', {
+      ...invitePayload,
+      invitation: invitePayload
+    });
+
+    // Send persistent invitation to Supabase PostgreSQL in background
     fetch('/api/invitations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -828,21 +881,6 @@ export default function PhotoboothView({
         type: 'photobooth',
         targetName: 'Photobooth'
       })
-    })
-    .then(res => res.json())
-    .then((data) => {
-      broadcastSync('INVITE_SENT', {
-        receiverName: friend.name,
-        receiverEmail: friend.email,
-        senderName: userName,
-        senderAvatar: currentUserAvatar,
-        senderImage: currentUserAvatar,
-        target: 'Photobooth',
-        targetName: 'Photobooth',
-        activity: 'Photobooth',
-        type: 'photobooth',
-        invitation: data?.invitation
-      });
     })
     .catch(err => console.error("Error sending photobooth invitation:", err));
 
@@ -1374,7 +1412,7 @@ export default function PhotoboothView({
     if (isPartnerMockBot) {
       setTimeout(() => {
         executeResetForRetake();
-        showToast(`${partnerName} menyetujui foto ulang!`, 3000);
+        showToast(`${partnerName} agreed to retake photos!`, 3000);
       }, 1200);
     }
   };
@@ -1382,7 +1420,7 @@ export default function PhotoboothView({
   const handleCancelRetake = () => {
     setRetakeModalState(null);
     broadcastSync('PHOTOBOOTH_RETAKE_CANCEL', { senderName: userName });
-    showToast('Foto ulang dibatalkan', 2000);
+    showToast('Retake request cancelled', 2000);
   };
 
   const handleAcceptRetake = () => {
@@ -1391,7 +1429,7 @@ export default function PhotoboothView({
       accepted: true,
       responderName: userName
     });
-    showToast('Foto diulang dari awal!', 2500);
+    showToast('Photos restarted from the beginning!', 2500);
   };
 
   const handleDeclineRetake = () => {
@@ -1400,7 +1438,7 @@ export default function PhotoboothView({
       accepted: false,
       responderName: userName
     });
-    showToast('Menolak foto ulang', 2000);
+    showToast('Declined retake request', 2000);
   };
 
   // Delete individual photo - keeps hasCompletedSequence active, upload option only!
@@ -1958,22 +1996,22 @@ export default function PhotoboothView({
                       <div className="w-14 h-14 rounded-full bg-[#A577FF]/20 border-2 border-[#A577FF] flex items-center justify-center mb-3 shadow-[0_0_25px_rgba(165,119,255,0.4)]">
                         <RefreshCw size={24} className="text-[#A577FF]" />
                       </div>
-                      <h3 className="text-sm font-bold text-white mb-1.5">Permintaan Foto Ulang</h3>
+                      <h3 className="text-sm font-bold text-white mb-1.5">Retake Photos Request</h3>
                       <p className="text-xs text-gray-300 mb-4 leading-relaxed">
-                        <span className="font-semibold text-[#C4A6FF]">{retakeModalState.requesterName}</span> mengajak untuk foto ulang dari awal. Apakah kamu setuju?
+                        <span className="font-semibold text-[#C4A6FF]">{retakeModalState.requesterName}</span> requested to retake photos from the beginning. Do you agree?
                       </p>
                       <div className="flex items-center gap-2.5 w-full">
                         <button
                           onClick={handleDeclineRetake}
                           className="flex-1 bg-white/10 hover:bg-white/15 border border-white/10 text-gray-300 text-xs font-semibold py-2.5 rounded-xl transition-all cursor-pointer active:scale-95"
                         >
-                          Tolak
+                          Decline
                         </button>
                         <button
                           onClick={handleAcceptRetake}
                           className="flex-1 bg-gradient-to-r from-[#A577FF] to-[#7065D4] hover:from-[#B58FFF] hover:to-[#857AE6] text-white text-xs font-bold py-2.5 rounded-xl transition-all shadow-[0_0_15px_rgba(165,119,255,0.4)] cursor-pointer active:scale-95"
                         >
-                          Setuju (Ulangi)
+                          Agree (Restart)
                         </button>
                       </div>
                     </>
@@ -1982,15 +2020,15 @@ export default function PhotoboothView({
                       <div className="w-14 h-14 rounded-full bg-[#A577FF]/20 border-2 border-[#A577FF] flex items-center justify-center mb-3 shadow-[0_0_25px_rgba(165,119,255,0.4)]">
                         <Clock size={24} className="text-[#A577FF] animate-spin" />
                       </div>
-                      <h3 className="text-sm font-bold text-white mb-1.5">Menunggu Persetujuan</h3>
+                      <h3 className="text-sm font-bold text-white mb-1.5">Waiting for Approval</h3>
                       <p className="text-xs text-gray-300 mb-4 leading-relaxed">
-                        Menunggu konfirmasi dari <span className="font-semibold text-[#C4A6FF]">{retakeModalState.partnerName}</span> untuk foto ulang dari awal...
+                        Waiting for <span className="font-semibold text-[#C4A6FF]">{retakeModalState.partnerName}</span> to confirm retaking photos...
                       </p>
                       <button
                         onClick={handleCancelRetake}
                         className="bg-white/10 hover:bg-white/15 border border-white/10 text-gray-300 text-xs font-semibold px-6 py-2 rounded-xl transition-all cursor-pointer active:scale-95"
                       >
-                        Batalkan
+                        Cancel
                       </button>
                     </>
                   )}
@@ -2019,18 +2057,18 @@ export default function PhotoboothView({
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-ping" />
                     <h3 className="text-base font-bold text-white tracking-wide">
-                      {currentTurnUser.name}'s Turn (Orang #{currentTurnIndex + 1})
+                      {currentTurnUser.name}'s Turn (Person #{currentTurnIndex + 1})
                     </h3>
                   </div>
 
                   <p className="text-xs text-[#C4A6FF] font-medium max-w-xs mb-3">
                     {countdown !== null 
-                      ? `${currentTurnUser.name} sedang mengambil gambar (${countdown}s)...` 
-                      : `Kamera aktif di perangkat ${currentTurnUser.name}`}
+                      ? `${currentTurnUser.name} is taking a photo (${countdown}s)...` 
+                      : `Camera active on ${currentTurnUser.name}'s device`}
                   </p>
 
                   <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3.5 py-1.5 rounded-full text-[11px] text-gray-300">
-                    <span>Giliran Anda berikutnya setelah {currentTurnUser.name}</span>
+                    <span>Your turn is next after {currentTurnUser.name}</span>
                   </div>
                 </div>
               </div>
@@ -2060,13 +2098,13 @@ export default function PhotoboothView({
                         <Upload size={24} />
                       </div>
                       <span className="text-[10px] uppercase tracking-wider font-bold text-[#C4A6FF] bg-white/5 px-2.5 py-0.5 rounded-full border border-white/10 mb-2">
-                        Slot Dihapus ({capturedPhotos.length}/{selectedLayout.cuts})
+                        Slot Removed ({capturedPhotos.length}/{selectedLayout.cuts})
                       </span>
                       <h3 className="text-sm font-bold text-white mb-1.5">
-                        Ingin Mengisi Slot Kosong?
+                        Fill Empty Slot?
                       </h3>
                       <p className="text-xs text-gray-300 mb-4 leading-relaxed">
-                        Upload foto dari galeri untuk melengkapi kolase, atau tetap lanjutkan dengan foto yang tersisa.
+                        Upload a photo from your gallery to complete the collage, or proceed with the remaining photos.
                       </p>
                       <div className="flex items-center gap-2">
                         <button
@@ -2074,14 +2112,14 @@ export default function PhotoboothView({
                           className="bg-[#A577FF]/20 hover:bg-[#A577FF]/30 border border-[#A577FF]/50 text-[#C4A6FF] hover:text-white text-xs font-bold px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
                         >
                           <Upload size={13} />
-                          <span>Upload Foto</span>
+                          <span>Upload Photo</span>
                         </button>
                         <button
                           onClick={() => setIsPreviewStripModalOpen(true)}
                           className="bg-gradient-to-r from-[#A577FF] to-[#7065D4] hover:from-[#B58FFF] hover:to-[#857AE6] text-white text-xs font-bold px-4 py-2 rounded-xl transition-all shadow-md cursor-pointer flex items-center gap-1.5"
                         >
                           <Eye size={13} />
-                          <span>Lihat Kolase</span>
+                          <span>View Collage</span>
                         </button>
                       </div>
                     </>
@@ -2091,20 +2129,20 @@ export default function PhotoboothView({
                         <Check size={24} className="text-emerald-400" />
                       </div>
                       <span className="text-[10px] uppercase tracking-wider font-bold text-emerald-300 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20 mb-2">
-                        Selesai ({capturedPhotos.length}/{selectedLayout.cuts})
+                        Completed ({capturedPhotos.length}/{selectedLayout.cuts})
                       </span>
                       <h3 className="text-sm font-bold text-white mb-1.5">
-                        Semua Foto Telah Diambil!
+                        All Photos Taken!
                       </h3>
                       <p className="text-xs text-gray-300 mb-4 leading-relaxed">
-                        Kolase Anda telah lengkap. Anda dapat melihat hasil strip, mengubah urutan foto di samping, atau mengunduhnya.
+                        Your collage is complete! You can view the strip, reorder photos on the side, or download it.
                       </p>
                       <button
                         onClick={() => setIsPreviewStripModalOpen(true)}
                         className="bg-gradient-to-r from-[#A577FF] to-[#7065D4] hover:from-[#B58FFF] hover:to-[#857AE6] text-white text-xs font-bold px-6 py-2.5 rounded-xl transition-all shadow-[0_0_20px_rgba(165,119,255,0.4)] cursor-pointer flex items-center gap-2"
                       >
                         <Eye size={14} />
-                        <span>Lihat Kolase Lengkap</span>
+                        <span>View Full Collage</span>
                       </button>
                     </>
                   )}
@@ -2128,14 +2166,14 @@ export default function PhotoboothView({
                     </div>
                   </div>
                   <h3 className="text-sm font-bold text-white mb-1">
-                    Menunggu {hostUser.name} Memulai Photobooth
+                    Waiting for {hostUser.name} to Start Photobooth
                   </h3>
                   <p className="text-[11px] text-[#C4A6FF] max-w-xs mb-3">
-                    {hostUser.name} sebagai orang pertama (host) yang akan memulai sesi foto bersama. Kamera Anda siap saat giliran Anda tiba.
+                    {hostUser.name} is the host and will start the photo session. Your camera is ready for your turn.
                   </p>
                   <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] text-gray-300">
                     <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-                    <span>Kamera Anda Siap • Giliran #{activeUsers.findIndex(u => u.name === userName) + 1}</span>
+                    <span>Your Camera is Ready • Turn #{activeUsers.findIndex(u => u.name === userName) + 1}</span>
                   </div>
                 </div>
               </div>
@@ -2145,7 +2183,7 @@ export default function PhotoboothView({
             {cameraStatus === 'ready' && retakeModalState === null && !isCapturingSequence && !hasCompletedSequence && isMultiplayer && isHostRef.current && !effectivePartnerCameraReady && (
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-[#150A35]/90 backdrop-blur-md border border-amber-500/40 text-amber-200 px-3.5 py-1.5 rounded-full flex items-center gap-2 text-xs font-semibold shadow-lg z-15">
                 <Clock size={12} className="text-amber-400 animate-spin" />
-                <span>Menunggu kamera {partnerUser?.name || 'teman'} diizinkan...</span>
+                <span>Waiting for {partnerUser?.name || 'partner'}'s camera permission...</span>
               </div>
             )}
 
@@ -2188,7 +2226,7 @@ export default function PhotoboothView({
                     className="bg-[#A577FF]/20 hover:bg-[#A577FF]/30 border border-[#A577FF]/50 text-[#C4A6FF] hover:text-white text-xs font-bold px-5 py-2.5 rounded-full shadow-sm transition-all cursor-pointer active:scale-95 flex items-center gap-1.5"
                   >
                     <Upload size={13} />
-                    <span>Upload Foto</span>
+                    <span>Upload Photo</span>
                   </button>
                 )}
                 <button 
@@ -2206,17 +2244,17 @@ export default function PhotoboothView({
                 className="bg-white/15 text-gray-400 text-xs font-bold px-8 py-2.5 rounded-full shadow-xs cursor-not-allowed flex items-center gap-2"
               >
                 <Clock size={13} className="text-[#A577FF] animate-spin" />
-                <span>Mengambil Gambar...</span>
+                <span>Taking Photos...</span>
               </button>
             ) : isMultiplayer && !isHostRef.current ? (
               // Guest waiting for host to start
               <button 
                 disabled
                 className="bg-white/10 border border-white/10 text-gray-400 text-xs font-bold px-7 py-2.5 rounded-full shadow-xs cursor-not-allowed flex items-center gap-2"
-                title={`Menunggu ${hostUser.name} menekan tombol START`}
+                title={`Waiting for ${hostUser.name} to press START`}
               >
                 <Clock size={13} className="text-[#A577FF] animate-spin" />
-                <span>Menunggu {hostUser.name} Memulai...</span>
+                <span>Waiting for {hostUser.name} to Start...</span>
               </button>
             ) : (
               // Host or solo ready to start: check camera readiness
@@ -2226,16 +2264,16 @@ export default function PhotoboothView({
                   className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs font-bold px-7 py-2.5 rounded-full shadow-lg transition-all cursor-pointer active:scale-95 flex items-center gap-2"
                 >
                   <AlertCircle size={14} />
-                  <span>Izinkan Akses Kamera Dulu</span>
+                  <span>Allow Camera Access First</span>
                 </button>
               ) : isMultiplayer && !effectivePartnerCameraReady ? (
                 <button 
                   disabled
                   className="bg-white/10 border border-amber-500/30 text-amber-300 text-xs font-semibold px-7 py-2.5 rounded-full shadow-xs cursor-not-allowed flex items-center gap-2"
-                  title={`Menunggu ${partnerUser?.name || 'teman'} mengizinkan akses kamera`}
+                  title={`Waiting for ${partnerUser?.name || 'partner'} to allow camera access`}
                 >
                   <Clock size={13} className="text-amber-400 animate-spin" />
-                  <span>Menunggu Kamera {partnerUser?.name || 'Teman'}...</span>
+                  <span>Waiting for {partnerUser?.name || 'Partner'}'s Camera...</span>
                 </button>
               ) : (
                 <button 
@@ -2395,11 +2433,11 @@ export default function PhotoboothView({
               <div 
                 onClick={() => fileInputRef.current?.click()}
                 className="w-40 aspect-[4/3] rounded-[18px] border-2 border-dashed border-[#A577FF]/50 bg-[#1B0F38]/40 hover:bg-[#A577FF]/10 hover:border-[#A577FF] flex flex-col items-center justify-center p-3 text-center cursor-pointer transition-all shrink-0 group shadow-md"
-                title="Upload foto untuk mengisi slot ini"
+                title="Upload photo to fill this slot"
               >
                 <Upload size={18} className="text-[#A577FF] mb-1 group-hover:scale-110 transition-transform" />
-                <span className="text-[11px] font-bold text-white">+ Upload Foto</span>
-                <span className="text-[9px] text-[#C4A6FF]/80 mt-0.5">Slot #{capturedPhotos.length + 1} Kosong</span>
+                <span className="text-[11px] font-bold text-white">+ Upload Photo</span>
+                <span className="text-[9px] text-[#C4A6FF]/80 mt-0.5">Slot #{capturedPhotos.length + 1} Empty</span>
               </div>
             )}
           </div>

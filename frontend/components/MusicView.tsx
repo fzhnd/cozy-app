@@ -347,7 +347,27 @@ export default function MusicView({
     setActiveFriend(friend);
     setFriendState('waiting');
 
-    // Send persistent invitation to Supabase PostgreSQL
+    const tempInviteId = `listen_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const invitePayload = {
+      id: tempInviteId,
+      receiverName: friend.name,
+      receiverEmail: friend.email,
+      senderName: currentUserName,
+      senderAvatar: userImage,
+      target: 'Listening Together',
+      targetName: 'Listening Together',
+      activity: 'Listening Together',
+      type: 'activity',
+      timestamp: Date.now()
+    };
+
+    // Instant optimistic broadcast (<10ms)
+    broadcastSync('INVITE_SENT', {
+      ...invitePayload,
+      invitation: invitePayload
+    });
+
+    // Send persistent invitation to Supabase PostgreSQL in background
     fetch('/api/invitations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -359,20 +379,6 @@ export default function MusicView({
         type: 'activity',
         targetName: 'Listening Together'
       })
-    })
-    .then(res => res.json())
-    .then((data) => {
-      broadcastSync('INVITE_SENT', {
-        receiverName: friend.name,
-        receiverEmail: friend.email,
-        senderName: currentUserName,
-        senderAvatar: userImage,
-        target: 'Listening Together',
-        targetName: 'Listening Together',
-        activity: 'Listening Together',
-        type: 'activity',
-        invitation: data?.invitation
-      });
     })
     .catch(err => console.error("Error sending listening invite:", err));
   };

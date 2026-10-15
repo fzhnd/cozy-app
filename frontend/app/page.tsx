@@ -1205,6 +1205,15 @@ export default function CozyApp() {
       });
       setIsWatchTogetherOpen(true);
 
+      // Instant optimistic broadcast (<10ms)
+      broadcastSync('SESSION_JOINED', { 
+        partnerName: n.name, 
+        partnerAvatar: partnerAvatar,
+        senderName: userName,
+        senderAvatar: userImage,
+        target: 'Watch Together' 
+      });
+
       // Update invitation status to 'accepted' in Supabase PostgreSQL
       fetch('/api/invitations', {
         method: 'PATCH',
@@ -1221,13 +1230,6 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { 
-          partnerName: n.name, 
-          partnerAvatar: partnerAvatar,
-          senderName: userName,
-          senderAvatar: userImage,
-          target: 'Watch Together' 
-        });
       })
       .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
@@ -1239,6 +1241,15 @@ export default function CozyApp() {
         avatar: partnerAvatar
       });
       setActiveTab('music');
+
+      // Instant optimistic broadcast (<10ms)
+      broadcastSync('SESSION_JOINED', { 
+        partnerName: n.name, 
+        partnerAvatar: partnerAvatar,
+        senderName: userName,
+        senderAvatar: userImage,
+        target: 'Listening Together' 
+      });
 
       // Update invitation status to 'accepted' in Supabase PostgreSQL
       fetch('/api/invitations', {
@@ -1256,13 +1267,6 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { 
-          partnerName: n.name, 
-          partnerAvatar: partnerAvatar,
-          senderName: userName,
-          senderAvatar: userImage,
-          target: 'Listening Together' 
-        });
       })
       .catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
@@ -1275,6 +1279,15 @@ export default function CozyApp() {
         isHost: true
       });
       setActiveTab('photobooth');
+
+      // Instant optimistic broadcast (<10ms)
+      broadcastSync('SESSION_JOINED', { 
+        partnerName: n.name, 
+        partnerAvatar: partnerAvatar,
+        senderName: userName,
+        senderAvatar: userImage,
+        target: 'Photobooth' 
+      });
 
       // Update invitation status to 'accepted' in Supabase PostgreSQL
       fetch('/api/invitations', {
@@ -1292,13 +1305,6 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { 
-          partnerName: n.name, 
-          partnerAvatar: partnerAvatar,
-          senderName: userName,
-          senderAvatar: userImage,
-          target: 'Photobooth' 
-        });
       })
       .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }
