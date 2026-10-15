@@ -276,6 +276,7 @@ export default function PhotoboothView({
     if (!userName) return;
     const currentAvatar = userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=F9EBD8`;
     setJoinedUsers(prev => {
+      const isHost = isHostRef.current;
       const myLower = userName.toLowerCase().trim();
       const others = prev.filter(u => {
         const uLower = (u.name || '').toLowerCase().trim();
