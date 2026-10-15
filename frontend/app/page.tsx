@@ -1210,7 +1210,7 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Watch Together' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Watch Together' });
       })
       .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
@@ -1239,7 +1239,7 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Listening Together' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Listening Together' });
       })
       .catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
@@ -1268,7 +1268,7 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, senderAvatar: userImage, target: 'Photobooth' });
+        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Photobooth' });
       })
       .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }

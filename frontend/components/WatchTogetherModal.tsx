@@ -238,7 +238,7 @@ export default function WatchTogetherModal({
 
       // 2. Friend left or Host ended Watch Together (<10ms)
       if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'watch together' || data.type === 'watch together')) {
-        const leaver = data.userName || data.senderName;
+        const leaver = data.userName || data.senderName || data.sender;
         if (data.action === 'end') {
           showLeaveToastOnce('Watch Together session ended');
           setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
@@ -282,6 +282,36 @@ export default function WatchTogetherModal({
   const hasExitedRef = useRef(false);
   const justJoinedTimeRef = useRef<number>(0);
   const justInvitedTimeRef = useRef<number>(0);
+
+  // If the modal is closed by ANY path (not only the exit button), still leave/end the session
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      return;
+    }
+    if (!wasOpenRef.current) return;
+    wasOpenRef.current = false;
+    if (hasExitedRef.current) return;
+    const others = joinedUsers.filter(u => u.name !== currentUserNameRef.current);
+    const partnerName = others[0]?.name || lastPartnerNameRef.current;
+    if (!partnerName) return;
+    hasExitedRef.current = true;
+    const actionType = isHostRef.current ? 'end' : 'leave';
+    fetch('/api/invitations', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: actionType,
+        partnerName,
+        senderName: currentUserNameRef.current,
+        type: 'activity',
+        targetName: 'Watch Together'
+      }),
+      keepalive: true
+    }).catch(() => {});
+    setJoinedUsers(prev => prev.filter(u => u.name === currentUserNameRef.current));
+  }, [isOpen]);
 
   // Cleanup on unmount: if host, ensure the session is marked ended in the database
   useEffect(() => {
@@ -475,7 +505,6 @@ export default function WatchTogetherModal({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
-        senderImage: currentUserAvatar,
         type: 'activity',
         targetName: 'Watch Together'
       })
@@ -486,7 +515,6 @@ export default function WatchTogetherModal({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
-        senderAvatar: currentUserAvatar,
         target: 'Watch Together',
         targetName: 'Watch Together',
         activity: 'Watch Together',
@@ -509,7 +537,7 @@ export default function WatchTogetherModal({
     hasExitedRef.current = true;
     const partner = joinedUsers.find(u => u.name !== currentUserName);
     const partnerName = partner?.name || lastPartnerNameRef.current;
-    const isHost = isHostRef.current || joinedUsers.some(u => u.name === currentUserName && u.isHost);
+    const isHost = isHostRef.current;
     lastLeaveToastTimeRef.current = Date.now();
     showToast("Left Watch Together", 3000);
 

@@ -339,7 +339,7 @@ export default function PhotoboothView({
 
       // 2. Friend left or Host ended Photobooth (<10ms)
       if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'photobooth' || data.type === 'photobooth')) {
-        const leaver = data.userName || data.senderName;
+        const leaver = data.userName || data.senderName || data.sender;
         if (data.action === 'end') {
           showLeaveToastOnce('Photobooth session ended');
           setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
@@ -531,7 +531,6 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
-        senderImage: currentUserAvatar,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
@@ -542,7 +541,6 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
-        senderAvatar: currentUserAvatar,
         target: 'Photobooth',
         targetName: 'Photobooth',
         activity: 'Photobooth',

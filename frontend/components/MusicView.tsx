@@ -326,7 +326,6 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
-        senderImage: userImage,
         type: 'activity',
         targetName: 'Listening Together'
       })
@@ -337,7 +336,6 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
-        senderAvatar: userImage,
         target: 'Listening Together',
         targetName: 'Listening Together',
         activity: 'Listening Together',

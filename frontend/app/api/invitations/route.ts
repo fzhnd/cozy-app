@@ -115,9 +115,9 @@ export async function GET(req: Request) {
     };
 
     const invitations = allRows.filter(isReceiver).map((r, idx) => {
-      const resolvedAvatar = r.senderImage 
-        || (r.senderEmail && userImageMap.get(r.senderEmail.toLowerCase().trim())) 
+      const resolvedAvatar = (r.senderEmail && userImageMap.get(r.senderEmail.toLowerCase().trim())) 
         || (r.senderName && userImageMap.get(r.senderName.toLowerCase().trim())) 
+        || r.senderImage 
         || `https://api.dicebear.com/7.x/adventurer/svg?seed=${r.senderName}&backgroundColor=A577FF`;
 
       return {
@@ -254,7 +254,8 @@ export async function POST(req: Request) {
       select: { name: true, image: true }
     });
     const senderName = clientSenderName?.trim() || dbSender?.name?.trim() || session.user.name?.trim() || senderEmail.split('@')[0];
-    const senderImage = clientSenderImage || dbSender?.image || session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=A577FF`;
+    // Server-authoritative avatar (never trust client fallback, which is identical for every user)
+    const senderImage = dbSender?.image || session.user.image || `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderName}&backgroundColor=A577FF`;
 
     // Attempt to resolve receiver email if not supplied
     let finalReceiverEmail = receiverEmail?.toLowerCase().trim() || '';
