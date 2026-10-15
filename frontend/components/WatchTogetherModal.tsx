@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
-  Search, X, Play, LogOut, UserPlus, 
+  Search, X, Play, Pause, RotateCcw, RotateCw, LogOut, UserPlus, 
   ExternalLink, Maximize2, Minimize2, Users, Check, Film, Sparkles, RefreshCw
 } from 'lucide-react';
 import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
@@ -9,7 +9,44 @@ export interface WatchUser {
   name: string;
   avatar: string;
   status: 'pending' | 'joined';
+  isHost?: boolean;
 }
+
+const sortWatchUsers = (users: WatchUser[], currentUserName?: string, isCurrentUserHost?: boolean): WatchUser[] => {
+  const seen = new Set<string>();
+  const uniqueUsers: WatchUser[] = [];
+  users.forEach(u => {
+    const key = (u.name || '').toLowerCase().trim();
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      uniqueUsers.push(u);
+    }
+  });
+
+  const fixed = uniqueUsers.map(u => {
+    if (currentUserName && isCurrentUserHost !== undefined) {
+      if (u.name.toLowerCase().trim() === currentUserName.toLowerCase().trim()) {
+        return { ...u, isHost: isCurrentUserHost };
+      }
+      return { ...u, isHost: !isCurrentUserHost };
+    }
+    return u;
+  });
+
+  const host = fixed.find(u => u.isHost);
+  const guests = fixed.filter(u => !u.isHost);
+  if (host) {
+    return [host, ...guests];
+  }
+  return fixed;
+};
+
+const formatTime = (secs: number) => {
+  if (isNaN(secs) || secs < 0) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
 
 export interface WatchVideo {
   id: string;
@@ -145,33 +182,59 @@ export default function WatchTogetherModal({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [videoList, setVideoList] = useState<WatchVideo[]>(DEFAULT_VIDEOS);
 
-  // Listening Together style: User Avatars with pending/joined status & Invite Dropdown
-  const [joinedUsers, setJoinedUsers] = useState<WatchUser[]>([
-    { name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: true }
-  ]);
+  // Synced Playback State
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [totalDuration, setTotalDuration] = useState(180);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const departedPartnerNamesRef = useRef<Set<string>>(new Set());
+  const activeVideoRef = useRef<WatchVideo | null>(null);
+  activeVideoRef.current = activeVideo;
+  const isPlayingRef = useRef<boolean>(true);
+  isPlayingRef.current = isPlaying;
+  const currentTimeRef = useRef<number>(0);
+  currentTimeRef.current = currentTime;
+
+  // Turn-based / Host-aware Joined Users State
+  const isHostRef = useRef<boolean>(!initialFriend);
+  const [joinedUsers, setJoinedUsers] = useState<WatchUser[]>(() => {
+    if (initialFriend) {
+      const friend = friendsList?.find((f: any) => f.name.toLowerCase() === initialFriend.name.toLowerCase());
+      const partnerAvatar = initialFriend.avatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`;
+      return [
+        { name: initialFriend.name, avatar: partnerAvatar, status: 'joined', isHost: true },
+        { name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: false }
+      ];
+    }
+    return [{ name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: true }];
+  });
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLeaveToastTimeRef = useRef<number>(0);
   const lastLeaveToastMsgRef = useRef<string>('');
-  const isHostRef = useRef<boolean>(true);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
   const lastPartnerNameRef = useRef<string | null>(null);
 
-  // Keep host user entry synchronized with current logged-in user
+  // Keep host/user entry synchronized with current logged-in user without overwriting guest status
   useEffect(() => {
     if (!currentUserName) return;
     const resolvedAvatar = currentUser?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${currentUserName}&backgroundColor=A577FF`;
     setJoinedUsers(prev => {
-      const others = prev.filter(u => u.name !== currentUserName && u.name !== 'You' && u.name !== 'User');
+      const isHost = isHostRef.current;
+      const myLower = currentUserName.toLowerCase().trim();
+      const others = prev.filter(u => {
+        const uLower = (u.name || '').toLowerCase().trim();
+        return uLower !== myLower && uLower !== 'you' && uLower !== 'user';
+      });
       const myEntry: WatchUser = {
         name: currentUserName,
         avatar: resolvedAvatar,
         status: 'joined',
-        isHost: true
+        isHost
       };
-      return [myEntry, ...others];
+      return sortWatchUsers([myEntry, ...others], currentUserName, isHost);
     });
   }, [isOpen, currentUserName, currentUser?.avatar]);
 
@@ -198,6 +261,91 @@ export default function WatchTogetherModal({
     } catch (e) {}
   }, [currentUserName]);
 
+  // YouTube IFrame PostMessage API command sender
+  const sendIframeCommand = useCallback((func: string, args: any[] = []) => {
+    try {
+      iframeRef.current?.contentWindow?.postMessage(
+        JSON.stringify({ event: 'command', func, args }),
+        '*'
+      );
+    } catch (e) {}
+  }, []);
+
+  // Synchronized user actions
+  const handleSelectVideo = useCallback((video: WatchVideo | null) => {
+    setActiveVideo(video);
+    setIsPlaying(true);
+    setCurrentTime(0);
+    broadcastSync('WATCH_VIDEO_SELECT', {
+      video,
+      isPlaying: true,
+      currentTime: 0,
+      senderName: currentUserName
+    });
+  }, [broadcastSync, currentUserName]);
+
+  const handleTogglePlay = useCallback(() => {
+    const nextPlaying = !isPlaying;
+    setIsPlaying(nextPlaying);
+    sendIframeCommand(nextPlaying ? 'playVideo' : 'pauseVideo');
+    broadcastSync(nextPlaying ? 'WATCH_PLAY' : 'WATCH_PAUSE', {
+      time: currentTime,
+      senderName: currentUserName
+    });
+  }, [isPlaying, currentTime, sendIframeCommand, broadcastSync, currentUserName]);
+
+  const handleSeek = useCallback((newTime: number) => {
+    const clamped = Math.max(0, Math.min(newTime, totalDuration > 0 ? totalDuration : 99999));
+    setCurrentTime(clamped);
+    sendIframeCommand('seekTo', [clamped, true]);
+    broadcastSync('WATCH_SEEK', {
+      time: clamped,
+      senderName: currentUserName
+    });
+  }, [totalDuration, sendIframeCommand, broadcastSync, currentUserName]);
+
+  // Listen to postMessage from YouTube IFrame
+  useEffect(() => {
+    const handleMessage = (e: MessageEvent) => {
+      try {
+        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+        if (data?.event === 'infoDelivery' && data?.info) {
+          if (typeof data.info.currentTime === 'number') {
+            setCurrentTime(Math.floor(data.info.currentTime));
+          }
+          if (typeof data.info.duration === 'number' && data.info.duration > 0) {
+            setTotalDuration(Math.floor(data.info.duration));
+          }
+          if (typeof data.info.playerState === 'number') {
+            setIsPlaying(data.info.playerState === 1);
+          }
+        }
+      } catch (err) {}
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  // Tick playback timer smoothly when playing
+  useEffect(() => {
+    if (!isPlaying || !activeVideo) return;
+    const timer = setInterval(() => {
+      setCurrentTime(prev => {
+        if (totalDuration > 0 && prev >= totalDuration) return prev;
+        return prev + 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isPlaying, activeVideo, totalDuration]);
+
+  // Query partner's active video on open
+  useEffect(() => {
+    if (isOpen) {
+      hasExitedRef.current = false;
+      broadcastSync('WATCH_QUERY_STATE', { senderName: currentUserName });
+    }
+  }, [isOpen, broadcastSync, currentUserName]);
+
   // Setup SSE and cross-window sync for instant Watch Together session events (<10ms)
   useEffect(() => {
     if (!isOpen) return;
@@ -221,24 +369,120 @@ export default function WatchTogetherModal({
 
           lastPartnerNameRef.current = partnerName;
           hasExitedRef.current = false;
+          departedPartnerNamesRef.current.delete(partnerName.toLowerCase().trim());
           setJoinedUsers(prev => {
+            const partnerIsHost = !isHostRef.current;
             const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
+            let updated: WatchUser[];
             if (!exists) {
               showToast(`${partnerName} joined Watch Together!`, 3000);
-              return [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined' }];
-            } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
-              showToast(`${partnerName} accepted! Joined Watch Together`, 3000);
-              return prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
-                ? { ...u, avatar: resolvedAvatar, status: 'joined' }
+              updated = [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost }];
+            } else {
+              if (exists.status !== 'joined') {
+                showToast(`${partnerName} accepted! Joined Watch Together`, 3000);
+              }
+              updated = prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
+                ? { ...u, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost }
                 : u
               );
             }
-            return prev;
+            return sortWatchUsers(updated, currentUserName, isHostRef.current);
+          });
+
+          // Share ongoing video state immediately with the friend who just joined!
+          if (activeVideoRef.current) {
+            broadcastSync('WATCH_STATE_SYNC', {
+              video: activeVideoRef.current,
+              isPlaying: isPlayingRef.current,
+              currentTime: currentTimeRef.current,
+              senderName: currentUserName
+            });
+          }
+        }
+      }
+
+      // 2. Video Select / Change Sync (<10ms)
+      if (data.type === 'WATCH_VIDEO_SELECT') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe) {
+          setActiveVideo(data.video);
+          setIsPlaying(data.isPlaying ?? true);
+          setCurrentTime(data.currentTime || 0);
+          if (data.video) {
+            showToast(`${data.senderName || 'Partner'} played: ${data.video.title}`, 3000);
+          } else {
+            showToast(`${data.senderName || 'Partner'} returned to video grid`, 2500);
+          }
+        }
+      }
+
+      // 3. Play Sync (<10ms)
+      if (data.type === 'WATCH_PLAY') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe) {
+          setIsPlaying(true);
+          if (typeof data.time === 'number') {
+            setCurrentTime(data.time);
+            sendIframeCommand('seekTo', [data.time, true]);
+          }
+          sendIframeCommand('playVideo');
+          showToast(`${data.senderName || 'Partner'} played the video`, 2000);
+        }
+      }
+
+      // 4. Pause Sync (<10ms)
+      if (data.type === 'WATCH_PAUSE') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe) {
+          setIsPlaying(false);
+          if (typeof data.time === 'number') {
+            setCurrentTime(data.time);
+            sendIframeCommand('seekTo', [data.time, true]);
+          }
+          sendIframeCommand('pauseVideo');
+          showToast(`${data.senderName || 'Partner'} paused the video`, 2000);
+        }
+      }
+
+      // 5. Seek Sync (<10ms)
+      if (data.type === 'WATCH_SEEK') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe && typeof data.time === 'number') {
+          setCurrentTime(data.time);
+          sendIframeCommand('seekTo', [data.time, true]);
+        }
+      }
+
+      // 6. State Query & Response
+      if (data.type === 'WATCH_QUERY_STATE') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe && activeVideoRef.current) {
+          broadcastSync('WATCH_STATE_SYNC', {
+            video: activeVideoRef.current,
+            isPlaying: isPlayingRef.current,
+            currentTime: currentTimeRef.current,
+            senderName: currentUserName
           });
         }
       }
 
-      // 2. Friend left or Host ended Watch Together (<10ms)
+      if (data.type === 'WATCH_STATE_SYNC') {
+        const isMe = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMe && data.video) {
+          setActiveVideo(data.video);
+          setIsPlaying(data.isPlaying ?? true);
+          if (typeof data.currentTime === 'number') {
+            setCurrentTime(data.currentTime);
+            setTimeout(() => {
+              sendIframeCommand('seekTo', [data.currentTime, true]);
+              if (data.isPlaying) sendIframeCommand('playVideo');
+              else sendIframeCommand('pauseVideo');
+            }, 600);
+          }
+        }
+      }
+
+      // 7. Friend left or Host ended Watch Together (<10ms)
       const isWatchEvent = (
         data.type === 'SESSION_LEFT' && (
           data.target?.toLowerCase() === 'watch together' || 
@@ -253,10 +497,14 @@ export default function WatchTogetherModal({
         const eventPartner = (data.partnerName || '').toLowerCase().trim();
         lastPartnerLeaveTimeRef.current = Date.now();
 
+        if (leaver) departedPartnerNamesRef.current.add(leaver);
+        if (eventPartner) departedPartnerNamesRef.current.add(eventPartner);
+
         if (data.action === 'end') {
           showLeaveToastOnce('Watch Together session ended by host');
           hasExitedRef.current = true;
           setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase().trim() === current));
+          setActiveVideo(null);
         } else {
           const leaverDisplayName = data.userName || data.senderName || data.sender || 'Partner';
           if (leaver && leaver !== current) {
@@ -282,7 +530,7 @@ export default function WatchTogetherModal({
     return () => {
       unsubscribe();
     };
-  }, [isOpen, currentUserName, friendsList, showToast, showLeaveToastOnce]);
+  }, [isOpen, currentUserName, friendsList, showToast, showLeaveToastOnce, broadcastSync, sendIframeCommand]);
 
   const [isLoadingSearch, setIsLoadingSearch] = useState(false);
   const [searchHeading, setSearchHeading] = useState<string>('Trending & Popular on YouTube');
@@ -394,6 +642,7 @@ export default function WatchTogetherModal({
       hasExitedRef.current = false;
       justJoinedTimeRef.current = Date.now();
       lastPartnerNameRef.current = initialFriend.name;
+      departedPartnerNamesRef.current.delete(initialFriend.name.toLowerCase().trim());
       const friend = friendsList?.find((f: any) => f.name.toLowerCase() === initialFriend.name.toLowerCase());
       const resolvedAvatar = initialFriend.avatar 
         || friend?.avatar 
@@ -401,21 +650,25 @@ export default function WatchTogetherModal({
         || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`;
 
       setJoinedUsers(prev => {
+        let updated: WatchUser[];
         if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
-          return [...prev, { name: initialFriend.name, avatar: resolvedAvatar, status: 'joined' }];
+          updated = [...prev, { name: initialFriend.name, avatar: resolvedAvatar, status: 'joined', isHost: true }];
+        } else {
+          updated = prev.map(u => u.name.toLowerCase() === initialFriend.name.toLowerCase()
+            ? { ...u, avatar: resolvedAvatar, status: 'joined', isHost: true }
+            : u
+          );
         }
-        return prev.map(u => u.name.toLowerCase() === initialFriend.name.toLowerCase()
-          ? { ...u, avatar: resolvedAvatar, status: 'joined' }
-          : u
-        );
+        return sortWatchUsers(updated, currentUserName, false);
       });
       showToast(`Joined Watch Together with ${initialFriend.name}`, 3000);
+      broadcastSync('WATCH_QUERY_STATE', { senderName: currentUserName });
 
       if (onConsumeInitialFriend) {
         onConsumeInitialFriend();
       }
     }
-  }, [initialFriend, friendsList, showToast, onConsumeInitialFriend]);
+  }, [initialFriend, friendsList, showToast, onConsumeInitialFriend, currentUserName, broadcastSync]);
 
   // Active Watch Together session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
@@ -438,6 +691,7 @@ export default function WatchTogetherModal({
             if (session.status === 'accepted') {
               // Both users connected!
               lastPartnerNameRef.current = session.partnerName;
+              departedPartnerNamesRef.current.delete(session.partnerName.toLowerCase().trim());
               setJoinedUsers(prev => {
                 const friend = friendsList?.find((f: any) => f.name.toLowerCase() === session.partnerName.toLowerCase());
                 const resolvedAvatar = session.partnerImage 
@@ -446,59 +700,49 @@ export default function WatchTogetherModal({
                   || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`;
 
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                let updated: WatchUser[];
+                const partnerIsHost = !isHostRef.current;
                 if (!exists) {
                   showToast(`${session.partnerName} joined Watch Together!`, 3000);
-                  return [...prev, {
+                  updated = [...prev, {
                     name: session.partnerName,
                     avatar: resolvedAvatar,
-                    status: 'joined'
+                    status: 'joined',
+                    isHost: partnerIsHost
                   }];
-                } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
+                } else {
                   if (exists.status !== 'joined') {
                     showToast(`${session.partnerName} accepted! Joined Watch Together`, 3000);
                   }
-                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() 
-                    ? { ...u, avatar: resolvedAvatar, status: 'joined' } 
+                  updated = prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() 
+                    ? { ...u, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost } 
                     : u
                   );
                 }
-                return prev;
+                return sortWatchUsers(updated, currentUserName, isHostRef.current);
               });
             } else if (session.status === 'active') {
-              // Host is still in room, but partner has left
-              setJoinedUsers(prev => {
-                const myLower = (currentUserName || '').toLowerCase().trim();
-                const hasJoinedPartner = prev.some(u => u.name.toLowerCase().trim() !== myLower && u.status === 'joined');
-                if (hasJoinedPartner) {
-                  showLeaveToastOnce(`${session.partnerName || 'Partner'} left Watch Together`);
-                }
-                return prev.filter(u => u.name.toLowerCase().trim() === myLower || u.status === 'pending');
-              });
+              // Host is still in room, partner hasn't joined or has left
+              const partner = session.partnerName ? session.partnerName.toLowerCase().trim() : null;
+              if (partner && departedPartnerNamesRef.current.has(partner)) {
+                setJoinedUsers(prev => {
+                  const myLower = (currentUserName || '').toLowerCase().trim();
+                  return prev.filter(u => u.name.toLowerCase().trim() === myLower || u.status === 'pending');
+                });
+              }
             }
           } else {
-            // No active session in DB
-            const recentlyLeft = (Date.now() - lastPartnerLeaveTimeRef.current < 10000);
-            if (!recentlyLeft && (Date.now() - justJoinedTimeRef.current < 4000 || Date.now() - justInvitedTimeRef.current < 4000)) {
-              return;
+            // No active session in DB: only clean up if partner explicitly left
+            if (departedPartnerNamesRef.current.size > 0) {
+              setJoinedUsers(prev => {
+                const myLower = (currentUserName || '').toLowerCase().trim();
+                return prev.filter(u => {
+                  const uName = u.name.toLowerCase().trim();
+                  if (uName === myLower) return true;
+                  return !departedPartnerNamesRef.current.has(uName);
+                });
+              });
             }
-
-            // Session expired or host ended: keep only host and any active pending invites!
-            setJoinedUsers(prev => {
-              const myLower = (currentUserName || '').toLowerCase().trim();
-              const otherJoined = prev.filter(u => u.name.toLowerCase().trim() !== myLower && u.status === 'joined');
-              if (otherJoined.length > 0) {
-                showLeaveToastOnce(`Watch Together session ended`);
-              }
-              const hostUser = prev.find(u => u.name.toLowerCase().trim() === myLower) || { 
-                name: currentUserName, 
-                avatar: currentUserAvatar, 
-                status: 'joined', 
-                isHost: true 
-              };
-              const pendingUsers = prev.filter(u => u.status === 'pending');
-              isHostRef.current = true;
-              return [hostUser, ...pendingUsers];
-            });
           }
         })
         .catch(err => console.error("Error syncing watch session:", err));
@@ -575,6 +819,7 @@ export default function WatchTogetherModal({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        id: tempInviteId,
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
@@ -602,6 +847,10 @@ export default function WatchTogetherModal({
     lastLeaveToastTimeRef.current = Date.now();
     lastPartnerLeaveTimeRef.current = Date.now();
     showToast("Left Watch Together", 3000);
+
+    // Stop and clear video locally
+    setActiveVideo(null);
+    setIsPlaying(false);
 
     // 1. Broadcast immediately (<1ms) synchronously BEFORE fetch/unmount
     broadcastSync('SESSION_LEFT', { 
@@ -666,13 +915,13 @@ export default function WatchTogetherModal({
         duration: 'Playing',
         thumbnail: `https://i.ytimg.com/vi/${extractedId}/hqdefault.jpg`
       };
-      setActiveVideo(newVid);
+      handleSelectVideo(newVid);
       return;
     }
 
     // Real YouTube Search: fetch results and show in grid like the YouTube website!
     setIsLoadingSearch(true);
-    setActiveVideo(null); // Return to grid so search results are presented
+    handleSelectVideo(null); // Return to grid so search results are presented
     setSearchHeading(`Search results for "${query}"`);
 
     try {
@@ -892,7 +1141,7 @@ export default function WatchTogetherModal({
           <div className="flex items-center gap-2">
             {activeVideo && (
               <button 
-                onClick={() => setActiveVideo(null)}
+                onClick={() => handleSelectVideo(null)}
                 className="text-xs bg-white/10 hover:bg-white/15 px-3 py-1.5 rounded-full text-gray-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer font-medium"
               >
                 <Film size={13} />
@@ -927,16 +1176,103 @@ export default function WatchTogetherModal({
               {/* Responsive 16:9 YouTube Embed Player */}
               <div className="relative w-full aspect-video bg-black rounded-2xl overflow-hidden shadow-2xl border border-white/10">
                 <iframe
+                  ref={iframeRef}
+                  id="cozy-youtube-player"
                   src={
                     activeVideo.videoId.startsWith('__search__:')
-                      ? `https://www.youtube-nocookie.com/embed?listType=search&list=${encodeURIComponent(activeVideo.videoId.replace('__search__:', ''))}&autoplay=1&enablejsapi=1&rel=0&modestbranding=1`
-                      : `https://www.youtube-nocookie.com/embed/${activeVideo.videoId}?autoplay=1&enablejsapi=1&rel=0&modestbranding=1`
+                      ? `https://www.youtube-nocookie.com/embed?listType=search&list=${encodeURIComponent(activeVideo.videoId.replace('__search__:', ''))}&autoplay=1&enablejsapi=1&rel=0&modestbranding=1${typeof window !== 'undefined' ? `&origin=${encodeURIComponent(window.location.origin)}` : ''}`
+                      : `https://www.youtube-nocookie.com/embed/${activeVideo.videoId}?autoplay=1&enablejsapi=1&rel=0&modestbranding=1${typeof window !== 'undefined' ? `&origin=${encodeURIComponent(window.location.origin)}` : ''}`
                   }
                   title={activeVideo.title}
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                   allowFullScreen
                   className="w-full h-full border-0"
                 />
+              </div>
+
+              {/* Live Synchronized Playback Control Bar */}
+              <div className="p-3.5 px-4 rounded-2xl bg-[#161616] border border-white/10 flex flex-col gap-2.5 shadow-lg select-none">
+                {/* Time Slider */}
+                <div className="flex items-center gap-3 w-full">
+                  <span className="text-[11px] font-mono text-gray-400 w-10 text-right">
+                    {formatTime(currentTime)}
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={totalDuration > 0 ? totalDuration : 100}
+                    value={currentTime}
+                    onChange={(e) => handleSeek(Number(e.target.value))}
+                    className="flex-1 h-1.5 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#A577FF] hover:bg-white/30 transition-all"
+                  />
+                  <span className="text-[11px] font-mono text-gray-400 w-10">
+                    {totalDuration > 0 ? formatTime(totalDuration) : '--:--'}
+                  </span>
+                </div>
+
+                {/* Control Buttons & Sync Status */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    {/* Rewind 10s */}
+                    <button
+                      onClick={() => handleSeek(Math.max(0, currentTime - 10))}
+                      className="p-2 rounded-xl bg-white/5 hover:bg-white/15 text-gray-300 hover:text-white transition-all active:scale-95 cursor-pointer"
+                      title="Rewind 10s (Both)"
+                    >
+                      <RotateCcw size={16} />
+                    </button>
+
+                    {/* Play / Pause Toggle */}
+                    <button
+                      onClick={handleTogglePlay}
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#A577FF] hover:bg-[#9161eb] text-white font-bold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
+                      title="Play / Pause for everyone in room"
+                    >
+                      {isPlaying ? (
+                        <>
+                          <Pause size={15} fill="white" />
+                          <span>Pause Together</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play size={15} fill="white" />
+                          <span>Play Together</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Forward 10s */}
+                    <button
+                      onClick={() => handleSeek(currentTime + 10)}
+                      className="p-2 rounded-xl bg-white/5 hover:bg-white/15 text-gray-300 hover:text-white transition-all active:scale-95 cursor-pointer"
+                      title="Forward 10s (Both)"
+                    >
+                      <RotateCw size={16} />
+                    </button>
+                  </div>
+
+                  {/* Sync status badge */}
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      const partner = joinedUsers.find(
+                        u => (u.name || '').toLowerCase().trim() !== (currentUserName || '').toLowerCase().trim() && u.status === 'joined'
+                      );
+                      if (partner) {
+                        return (
+                          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>Synced with {partner.name}</span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 text-gray-400 text-xs font-medium">
+                          <span>Solo Mode</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
               </div>
 
               {/* Video Info Bar */}
@@ -956,7 +1292,7 @@ export default function WatchTogetherModal({
 
                 <div className="flex items-center gap-2 shrink-0">
                   <button 
-                    onClick={() => setActiveVideo(null)}
+                    onClick={() => handleSelectVideo(null)}
                     className="bg-[#A577FF] hover:bg-[#9161eb] text-white font-bold text-xs px-4 py-2 rounded-xl transition-all shadow-md cursor-pointer flex items-center gap-1.5 active:scale-95"
                   >
                     <span>Change Video</span>
@@ -984,7 +1320,7 @@ export default function WatchTogetherModal({
                   {DEFAULT_VIDEOS.filter(v => v.videoId !== activeVideo.videoId).slice(0, 4).map((v) => (
                     <div 
                       key={v.id}
-                      onClick={() => setActiveVideo(v)}
+                      onClick={() => handleSelectVideo(v)}
                       className="cursor-pointer group bg-[#181818] hover:bg-[#222222] p-2.5 rounded-xl border border-white/5 transition-all"
                     >
                       <div className="relative aspect-video rounded-lg overflow-hidden mb-2 bg-gray-900">
@@ -1061,7 +1397,7 @@ export default function WatchTogetherModal({
                   {videoList.map((video) => (
                     <div
                       key={video.id}
-                      onClick={() => setActiveVideo(video)}
+                      onClick={() => handleSelectVideo(video)}
                       className="cursor-pointer group flex flex-col transition-transform hover:-translate-y-1 duration-200"
                     >
                       {/* Thumbnail Container (16:9 ratio) */}

@@ -234,7 +234,7 @@ export async function POST(req: Request) {
     }
 
     const body = await req.json();
-    const { receiverName, receiverEmail, senderName: clientSenderName, senderImage: clientSenderImage, type = 'activity', targetName, groupId, channelId } = body;
+    const { receiverName, receiverEmail, senderName: clientSenderName, senderImage: clientSenderImage, type = 'activity', targetName, groupId, channelId, id: clientId } = body;
 
     if (!receiverName && !receiverEmail) {
       return NextResponse.json({ message: "Receiver is required" }, { status: 400 });
@@ -300,7 +300,7 @@ export async function POST(req: Request) {
          AND "status" IN ('active', 'accepted');`
     );
 
-    const invId = `inv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const invId = clientId ? String(clientId).trim() : `inv_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
     await prisma.$executeRawUnsafe(
       `INSERT INTO "Invitations" 
