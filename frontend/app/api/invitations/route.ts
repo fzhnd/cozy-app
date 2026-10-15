@@ -381,7 +381,7 @@ export async function PATCH(req: Request) {
     const senderAvatar = dbSender?.image || session.user.image || null;
 
     const myNames = Array.from(new Set([myDbName, mySessionName, clientName, userEmailPrefix].filter(Boolean)));
-    const target = (targetName || body.targetName || '').toLowerCase().trim();
+    const target = (targetName || body.targetName || type || body.type || '').toLowerCase().trim();
     const rawPartner = (partnerName || body.partnerName || '').toLowerCase().trim();
     const partner = (rawPartner && !myNames.includes(rawPartner) && rawPartner !== userEmail) ? rawPartner : '';
 
@@ -433,6 +433,7 @@ export async function PATCH(req: Request) {
         senderAvatar,
         partnerName: partner,
         target: target || type,
+        targetName: target || type,
         status: 'accepted'
       });
       return NextResponse.json({ success: true, message: "Invitation joined/accepted" }, { status: 200 });
@@ -466,6 +467,7 @@ export async function PATCH(req: Request) {
           senderEmail: userEmail,
           senderName: clientName || mySessionName || myDbName,
           target: target || 'channel_invite',
+          targetName: target || 'channel_invite',
           channelId,
           action: 'leave',
           status: 'expired'
@@ -475,7 +477,7 @@ export async function PATCH(req: Request) {
       }
 
       // Default activity handling (Listening Together, Watch Together, Photobooth)
-      const rows = await prisma.$queryRawUnsafe<any[]>(
+      let rows = await prisma.$queryRawUnsafe<any[]>(
         `SELECT * FROM "Invitations"
          WHERE "status" IN ('active', 'accepted')
            AND (
@@ -483,10 +485,28 @@ export async function PATCH(req: Request) {
              OR
              LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
            )
-           ${safePartner ? `AND (LOWER("senderName") = '${safePartner}' OR LOWER("receiverName") = '${safePartner}')` : ''}
+           ${safePartner ? `AND (
+             LOWER("senderName") = '${safePartner}' OR LOWER("receiverName") = '${safePartner}'
+             OR LOWER("senderEmail") = '${safePartner}' OR LOWER("receiverEmail") = '${safePartner}'
+           )` : ''}
            ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''}
          ORDER BY "updatedAt" DESC LIMIT 1;`
       );
+
+      // Fallback: If partner filter didn't match, match any active/accepted session for this user and activity
+      if (rows.length === 0 && safeTarget) {
+        rows = await prisma.$queryRawUnsafe<any[]>(
+          `SELECT * FROM "Invitations"
+           WHERE "status" IN ('active', 'accepted')
+             AND (
+               LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
+               OR
+               LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
+             )
+             AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')
+           ORDER BY "updatedAt" DESC LIMIT 1;`
+        );
+      }
 
       if (rows.length > 0) {
         const inv = rows[0];
@@ -501,6 +521,8 @@ export async function PATCH(req: Request) {
             `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
              WHERE (
                LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
+               OR
+               LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
              )
              AND "status" IN ('active', 'accepted')
              ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''};`
@@ -512,6 +534,7 @@ export async function PATCH(req: Request) {
             senderName: clientName || mySessionName || myDbName,
             partnerName: partner || inv.receiverName,
             target: target || inv.targetName,
+            targetName: target || inv.targetName,
             action: 'end',
             status: 'expired',
             isHost: true
@@ -531,6 +554,7 @@ export async function PATCH(req: Request) {
             senderName: clientName || mySessionName || myDbName,
             partnerName: partner || inv.senderName,
             target: target || inv.targetName,
+            targetName: target || inv.targetName,
             action: 'leave',
             status: 'active',
             isHost: false
@@ -539,7 +563,31 @@ export async function PATCH(req: Request) {
           return NextResponse.json({ success: true, role: 'guest', status: 'active' }, { status: 200 });
         }
       }
-      return NextResponse.json({ success: true, message: "No active session to leave" }, { status: 200 });
+
+      // If no row was found, still expire any lingering session matching target
+      await prisma.$executeRawUnsafe(
+        `UPDATE "Invitations" SET "status" = 'expired', "updatedAt" = NOW()
+         WHERE (
+           LOWER("senderEmail") = '${safeUserEmail}' OR LOWER("senderName") IN (${safeMyNamesSql})
+           OR
+           LOWER("receiverEmail") = '${safeUserEmail}' OR LOWER("receiverName") IN (${safeMyNamesSql})
+         )
+         AND "status" IN ('active', 'accepted')
+         ${safeTarget ? `AND (LOWER("targetName") = '${safeTarget}' OR LOWER("type") = '${safeTarget}')` : ''};`
+      );
+
+      broadcastRealtime({
+        type: 'SESSION_LEFT',
+        senderEmail: userEmail,
+        senderName: clientName || mySessionName || myDbName,
+        partnerName: partner,
+        target: target,
+        targetName: target,
+        action: 'leave',
+        status: 'expired'
+      });
+
+      return NextResponse.json({ success: true, message: "Cleared session" }, { status: 200 });
     }
 
     // 3. Explicit Expire / Cancel (action === 'end' or status === 'expired')
@@ -590,6 +638,7 @@ export async function PATCH(req: Request) {
       senderName: clientName || mySessionName || myDbName,
       partnerName: partner,
       target: targetFilter,
+      targetName: targetFilter,
       action: 'end',
       status: 'expired'
     });

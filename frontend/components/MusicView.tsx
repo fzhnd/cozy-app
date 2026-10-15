@@ -230,17 +230,33 @@ export default function MusicView({
       }
 
       // 2. Friend left or Host ended Listening Together (<10ms)
-      if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
-        const leaver = data.userName || data.senderName || data.sender;
+      const isListeningEvent = (
+        data.type === 'SESSION_LEFT' && (
+          data.target?.toLowerCase() === 'listening together' || 
+          data.targetName?.toLowerCase() === 'listening together' ||
+          data.activity?.toLowerCase() === 'listening together' ||
+          data.type === 'listening together'
+        )
+      );
+
+      if (isListeningEvent) {
+        const leaver = (data.userName || data.senderName || data.sender || '').toLowerCase().trim();
         lastPartnerLeaveTimeRef.current = Date.now();
+
         if (data.action === 'end') {
           showLeaveToastOnce('Host ended the listening session');
           hasExitedRef.current = true; // Protect from stale DB resurrection!
           setActiveFriend(null);
           setFriendState('none');
           isHostRef.current = false;
-        } else if (leaver && leaver.toLowerCase() !== current) {
-          showLeaveToastOnce(`${leaver} left the listening session`);
+        } else {
+          // Action is 'leave'
+          const leaverDisplayName = data.userName || data.senderName || data.sender || 'Partner';
+          if (leaver && leaver !== current) {
+            showLeaveToastOnce(`${leaverDisplayName} left the listening session`);
+          } else {
+            showLeaveToastOnce('Partner left the listening session');
+          }
           if (isHostRef.current) {
             // Keep host session active so partner can rejoin, but remove partner's icon immediately!
             setActiveFriend(null);
@@ -277,6 +293,19 @@ export default function MusicView({
         const partnerName = activeFriendRef.current?.name || lastPartnerNameRef.current;
         const isHost = isHostRef.current || friendStateRef.current === 'waiting';
         const actionType = isHost ? 'end' : 'leave';
+
+        try {
+          broadcastSyncRef.current('SESSION_LEFT', { 
+            partnerName: partnerName || undefined, 
+            target: 'Listening Together', 
+            targetName: 'Listening Together',
+            activity: 'Listening Together',
+            action: actionType,
+            userName: currentUserNameRef.current,
+            senderName: currentUserNameRef.current
+          });
+        } catch (e) {}
+
         try {
           fetch('/api/invitations', {
             method: 'PATCH',
@@ -290,10 +319,6 @@ export default function MusicView({
             }),
             keepalive: true
           }).catch(() => {});
-        } catch (e) {}
-
-        try {
-          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Listening Together', action: actionType });
         } catch (e) {}
       }
     };
@@ -407,22 +432,21 @@ export default function MusicView({
             } else if (session.status === 'active') {
               // Session is active (host is in room, but partner has left or not joined yet)
               if (session.isHost) {
-                if (friendStateRef.current === 'joined') {
-                  // Partner left! Transition to alone (no partner avatar, leave button remains)
+                if (activeFriendRef.current !== null || friendStateRef.current === 'joined') {
                   const prevName = activeFriendRef.current?.name || session.partnerName;
                   setActiveFriend(null);
                   setFriendState('alone');
-                  showLeaveToastOnce(`${prevName} left the listening session`);
+                  showLeaveToastOnce(`${prevName || 'Partner'} left the listening session`);
                 }
               }
             }
           } else {
-            // Grace period: If guest just joined or host just invited in the last 6 seconds, don't wipe them out while DB write commits!
-            if (Date.now() - justJoinedTimeRef.current < 6000 || Date.now() - justInvitedTimeRef.current < 6000) {
+            // No active session (host ended the session or invite expired)
+            const recentlyLeft = (Date.now() - lastPartnerLeaveTimeRef.current < 10000);
+            if (!recentlyLeft && (Date.now() - justJoinedTimeRef.current < 4000 || Date.now() - justInvitedTimeRef.current < 4000)) {
               return;
             }
 
-            // Case 2: No active session (host ended the session)
             if (friendStateRef.current === 'joined' || friendStateRef.current === 'alone') {
               const prevName = activeFriendRef.current?.name || lastPartnerNameRef.current;
               setFriendState('none');
@@ -1458,6 +1482,19 @@ export default function MusicView({
                   lastLeaveToastTimeRef.current = Date.now();
                   lastPartnerLeaveTimeRef.current = Date.now();
                   showToast(wasWaiting ? "Invitation cancelled" : "Left the listening session", 3000);
+
+                  // 1. Broadcast immediately (<1ms) synchronously BEFORE fetch/unmount
+                  broadcastSync('SESSION_LEFT', { 
+                    partnerName: leavingPartner, 
+                    target: 'Listening Together', 
+                    targetName: 'Listening Together',
+                    activity: 'Listening Together',
+                    action: isHost ? 'end' : 'leave',
+                    userName: currentUserName,
+                    senderName: currentUserName
+                  });
+
+                  // 2. Persist to DB with keepalive
                   fetch('/api/invitations', {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
@@ -1469,17 +1506,7 @@ export default function MusicView({
                       targetName: 'Listening Together'
                     }),
                     keepalive: true
-                  })
-                  .then(() => {
-                    broadcastSync('SESSION_LEFT', { 
-                      partnerName: leavingPartner, 
-                      target: 'Listening Together', 
-                      action: isHost ? 'end' : 'leave',
-                      userName: currentUserName,
-                      senderName: currentUserName
-                    });
-                  })
-                  .catch(e => {});
+                  }).catch(e => {});
                 }}
                 className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-400 hover:text-red-400 hover:bg-red-500/20 transition-colors cursor-pointer"
                 title={friendState === 'waiting' ? "Cancel Invitation" : "Leave Listening Session"}

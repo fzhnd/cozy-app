@@ -970,27 +970,38 @@ export default function CozyApp() {
 
       // 3. Instant Session Left / Expired (<10ms)
       if (data.type === 'SESSION_LEFT') {
-        if (data.action === 'end') {
-          // Immediately mark matching notifications as expired (0ms)!
-          const dataTarget = (data.target || data.targetName || '').toLowerCase().trim();
-          const dataSender = (data.senderName || '').toLowerCase().trim();
+        const dataTarget = (data.target || data.targetName || data.activity || '').toLowerCase().trim();
+        const dataSender = (data.senderName || data.userName || '').toLowerCase().trim();
 
-          setNotifications(prev => prev.map(n => {
-            if (data.invitationId && n.id === data.invitationId) {
-              return { ...n, status: 'expired' };
-            }
-            if (dataTarget && dataSender) {
-              const nTarget = (n.activity || n.targetName || n.game || n.channel || n.type || '').toLowerCase().trim();
-              const targetMatches = nTarget === dataTarget || nTarget.includes(dataTarget) || dataTarget.includes(nTarget);
-              const senderMatches = n.name?.toLowerCase() === dataSender;
-              if (targetMatches && senderMatches) {
+        if (dataTarget.includes('photobooth') || data.type === 'photobooth') {
+          setActivePhotoboothFriend(null);
+        }
+        if (dataTarget.includes('listening') || dataTarget.includes('music')) {
+          setActiveListeningFriend(null);
+        }
+        if (dataTarget.includes('watch')) {
+          setActiveWatchFriend(null);
+        }
+
+        if (data.action === 'end' || data.action === 'leave') {
+          if (data.action === 'end') {
+            setNotifications(prev => prev.map(n => {
+              if (data.invitationId && n.id === data.invitationId) {
                 return { ...n, status: 'expired' };
               }
-            }
-            return n;
-          }));
+              if (dataTarget && dataSender) {
+                const nTarget = (n.activity || n.targetName || n.game || n.channel || n.type || '').toLowerCase().trim();
+                const targetMatches = nTarget === dataTarget || nTarget.includes(dataTarget) || dataTarget.includes(nTarget);
+                const senderMatches = n.name?.toLowerCase() === dataSender;
+                if (targetMatches && senderMatches) {
+                  return { ...n, status: 'expired' };
+                }
+              }
+              return n;
+            }));
+          }
 
-          // Dismiss banner if it belongs to this ended session
+          // Dismiss banner if it belongs to this ended/left session
           setIncomingInviteBanner(prev => {
             if (!prev) return null;
             if (dataSender && prev.name?.toLowerCase() === dataSender) {

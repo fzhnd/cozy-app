@@ -239,17 +239,39 @@ export default function WatchTogetherModal({
       }
 
       // 2. Friend left or Host ended Watch Together (<10ms)
-      if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'watch together' || data.type === 'watch together')) {
-        const leaver = data.userName || data.senderName || data.sender;
+      const isWatchEvent = (
+        data.type === 'SESSION_LEFT' && (
+          data.target?.toLowerCase() === 'watch together' || 
+          data.targetName?.toLowerCase() === 'watch together' ||
+          data.activity?.toLowerCase() === 'watch together' ||
+          data.type === 'watch together'
+        )
+      );
+
+      if (isWatchEvent) {
+        const leaver = (data.userName || data.senderName || data.sender || '').toLowerCase().trim();
+        const eventPartner = (data.partnerName || '').toLowerCase().trim();
+        lastPartnerLeaveTimeRef.current = Date.now();
+
         if (data.action === 'end') {
-          showLeaveToastOnce('Watch Together session ended');
-          lastPartnerLeaveTimeRef.current = Date.now();
+          showLeaveToastOnce('Watch Together session ended by host');
           hasExitedRef.current = true;
-          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
-        } else if (leaver && leaver.toLowerCase() !== current) {
-          showLeaveToastOnce(`${leaver} left Watch Together`);
-          lastPartnerLeaveTimeRef.current = Date.now();
-          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() !== leaver.toLowerCase()));
+          setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase().trim() === current));
+        } else {
+          const leaverDisplayName = data.userName || data.senderName || data.sender || 'Partner';
+          if (leaver && leaver !== current) {
+            showLeaveToastOnce(`${leaverDisplayName} left Watch Together`);
+          } else {
+            showLeaveToastOnce('Partner left Watch Together');
+          }
+          setJoinedUsers(prev => prev.filter(u => {
+            const uName = u.name.toLowerCase().trim();
+            if (uName === current) return true;
+            if (leaver && uName === leaver) return false;
+            if (eventPartner && uName === eventPartner) return false;
+            if (u.status === 'joined') return false;
+            return true;
+          }));
         }
       }
 
@@ -443,33 +465,38 @@ export default function WatchTogetherModal({
                 return prev;
               });
             } else if (session.status === 'active') {
-              // Host is still in room. If partner was joined, guest left.
-              // If partner is pending, host is waiting for partner (keep pending!).
+              // Host is still in room, but partner has left
               setJoinedUsers(prev => {
-                const partnerUser = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
-                if (partnerUser && partnerUser.status === 'joined') {
-                  showLeaveToastOnce(`${session.partnerName} left Watch Together`);
-                  // Remove partner completely from joinedUsers so partner's avatar does not remain
-                  return prev.filter(u => u.name.toLowerCase() !== session.partnerName.toLowerCase());
+                const myLower = (currentUserName || '').toLowerCase().trim();
+                const hasJoinedPartner = prev.some(u => u.name.toLowerCase().trim() !== myLower && u.status === 'joined');
+                if (hasJoinedPartner) {
+                  showLeaveToastOnce(`${session.partnerName || 'Partner'} left Watch Together`);
                 }
-                // If partnerUser is 'pending', keep them! Host is waiting for them to accept.
-                return prev;
+                return prev.filter(u => u.name.toLowerCase().trim() === myLower || u.status === 'pending');
               });
             }
           } else {
-            // Grace period: If guest just joined or host just invited in the last 6 seconds, don't wipe them out while DB write commits!
-            if (Date.now() - justJoinedTimeRef.current < 6000 || Date.now() - justInvitedTimeRef.current < 6000) {
+            // No active session in DB
+            const recentlyLeft = (Date.now() - lastPartnerLeaveTimeRef.current < 10000);
+            if (!recentlyLeft && (Date.now() - justJoinedTimeRef.current < 4000 || Date.now() - justInvitedTimeRef.current < 4000)) {
               return;
             }
 
             // Session expired or host ended: keep only host and any active pending invites!
             setJoinedUsers(prev => {
-              const pendingUsers = prev.filter(u => u.status === 'pending');
-              const hostUser = prev.find(u => u.name === currentUserName) || { name: currentUserName, avatar: currentUserAvatar, status: 'joined', isHost: true };
-              const otherJoined = prev.filter(u => u.name !== currentUserName && u.status === 'joined');
+              const myLower = (currentUserName || '').toLowerCase().trim();
+              const otherJoined = prev.filter(u => u.name.toLowerCase().trim() !== myLower && u.status === 'joined');
               if (otherJoined.length > 0) {
                 showLeaveToastOnce(`Watch Together session ended`);
               }
+              const hostUser = prev.find(u => u.name.toLowerCase().trim() === myLower) || { 
+                name: currentUserName, 
+                avatar: currentUserAvatar, 
+                status: 'joined', 
+                isHost: true 
+              };
+              const pendingUsers = prev.filter(u => u.status === 'pending');
+              isHostRef.current = true;
               return [hostUser, ...pendingUsers];
             });
           }
@@ -563,13 +590,28 @@ export default function WatchTogetherModal({
 
   const handleCloseModal = () => {
     hasExitedRef.current = true;
-    const partner = joinedUsers.find(u => u.name !== currentUserName);
+    const partner = joinedUsers.find(u => u.name.toLowerCase() !== (currentUserName || '').toLowerCase());
     const partnerName = partner?.name || lastPartnerNameRef.current;
     const isHost = isHostRef.current;
     lastLeaveToastTimeRef.current = Date.now();
     lastPartnerLeaveTimeRef.current = Date.now();
     showToast("Left Watch Together", 3000);
 
+    // 1. Broadcast immediately (<1ms) synchronously BEFORE fetch/unmount
+    broadcastSync('SESSION_LEFT', { 
+      partnerName: partnerName || undefined, 
+      target: 'Watch Together', 
+      targetName: 'Watch Together',
+      activity: 'Watch Together',
+      action: isHost ? 'end' : 'leave',
+      userName: currentUserName,
+      senderName: currentUserName
+    });
+
+    // 2. Remove partner locally immediately
+    setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase().trim() === (currentUserName || '').toLowerCase().trim()));
+
+    // 3. Persist to DB with keepalive
     fetch('/api/invitations', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -581,17 +623,7 @@ export default function WatchTogetherModal({
         targetName: 'Watch Together'
       }),
       keepalive: true
-    })
-    .then(() => {
-      broadcastSync('SESSION_LEFT', { 
-        partnerName: partnerName || undefined, 
-        target: 'Watch Together', 
-        action: isHost ? 'end' : 'leave',
-        userName: currentUserName,
-        senderName: currentUserName
-      });
-    })
-    .catch(e => {});
+    }).catch(e => {});
 
     if (onLeaveSession) onLeaveSession();
     onClose();
