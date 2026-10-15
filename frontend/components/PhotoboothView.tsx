@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Camera, Upload, ChevronDown, RefreshCw, Download, 
   Sparkles, Layout, Palette, Check, X, AlertCircle, Eye,
-  LogOut, UserPlus, Users, ArrowUpDown, ArrowUp, ArrowDown
+  LogOut, UserPlus, Users, ArrowUpDown, ArrowUp, ArrowDown, Clock
 } from 'lucide-react';
 import { subscribeRealtime, broadcastLocalSync } from '../lib/realtimeClient';
 
@@ -79,7 +79,27 @@ interface PhotoboothUser {
   name: string;
   avatar: string;
   status: 'pending' | 'joined';
+  isHost?: boolean;
 }
+
+const sortPhotoboothUsers = (users: PhotoboothUser[], currentUserName?: string, isCurrentUserHost?: boolean): PhotoboothUser[] => {
+  const fixed = users.map(u => {
+    if (currentUserName && isCurrentUserHost !== undefined) {
+      if (u.name.toLowerCase() === currentUserName.toLowerCase()) {
+        return { ...u, isHost: isCurrentUserHost };
+      }
+      return { ...u, isHost: !isCurrentUserHost };
+    }
+    return u;
+  });
+
+  const host = fixed.find(u => u.isHost);
+  const guests = fixed.filter(u => !u.isHost);
+  if (host) {
+    return [host, ...guests];
+  }
+  return fixed;
+};
 
 export default function PhotoboothView({ 
   onGoHome, 
@@ -211,26 +231,36 @@ export default function PhotoboothView({
   };
 
   // Turn-Based Joined Users Queue State
+  const isHostRef = useRef<boolean>(!initialFriend);
   const currentUserAvatar = userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=F9EBD8`;
-  const [joinedUsers, setJoinedUsers] = useState<PhotoboothUser[]>([
-    { name: userName, avatar: currentUserAvatar, status: 'joined' }
-  ]);
+  const [joinedUsers, setJoinedUsers] = useState<PhotoboothUser[]>(() => {
+    if (initialFriend) {
+      const friend = friendsList?.find(f => f.name.toLowerCase() === initialFriend.name.toLowerCase());
+      const partnerAvatar = initialFriend.avatar || friend?.avatar || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`;
+      return [
+        { name: initialFriend.name, avatar: partnerAvatar, status: 'joined', isHost: true },
+        { name: userName, avatar: currentUserAvatar, status: 'joined', isHost: false }
+      ];
+    }
+    return [{ name: userName, avatar: currentUserAvatar, status: 'joined', isHost: true }];
+  });
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [activeShotIndex, setActiveShotIndex] = useState<number | null>(null);
-  const isHostRef = useRef<boolean>(true);
 
   // Keep creator's entry synchronized with logged-in user profile
   useEffect(() => {
     if (!userName) return;
     const currentAvatar = userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=F9EBD8`;
     setJoinedUsers(prev => {
+      const isHost = isHostRef.current;
       const others = prev.filter(u => u.name !== userName && u.name !== 'User' && u.name !== 'You');
       const myEntry: PhotoboothUser = {
         name: userName,
         avatar: currentAvatar,
-        status: 'joined'
+        status: 'joined',
+        isHost
       };
-      return [myEntry, ...others];
+      return sortPhotoboothUsers([myEntry, ...others], userName, isHost);
     });
   }, [userName, userImage]);
 
@@ -268,15 +298,20 @@ export default function PhotoboothView({
     : (capturedPhotos.length % activeUsers.length);
   const currentTurnUser = activeUsers[currentTurnIndex] || activeUsers[0];
   const nextTurnUser = activeUsers[(currentTurnIndex + 1) % activeUsers.length] || activeUsers[0];
-  const isMyTurn = currentTurnUser.name === userName;
+  const isMyTurn = currentTurnUser?.name?.toLowerCase() === (userName || '').toLowerCase();
+  const hostUser = activeUsers.find(u => u.isHost) || activeUsers[0];
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastLeaveToastTimeRef = useRef<number>(0);
   const lastLeaveToastMsgRef = useRef<string>('');
+  const lastPartnerLeaveTimeRef = useRef<number>(0);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const syncSessionRef = useRef<(() => void) | null>(null);
   const lastPartnerNameRef = useRef<string | null>(null);
+  const partnerPhotoResolverRef = useRef<((photo: PhotoboothPhoto) => void) | null>(null);
+  const lastReceivedPartnerPhotoRef = useRef<{ shotIndex: number; photo: PhotoboothPhoto } | null>(null);
+  const isCapturingSequenceRef = useRef<boolean>(false);
 
   const showToast = useCallback((msg: string, duration = 3000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -297,7 +332,7 @@ export default function PhotoboothView({
 
   const broadcastSync = useCallback((type: string, payload?: any) => {
     try {
-      broadcastLocalSync({ type, sender: userName, ...payload });
+      broadcastLocalSync({ type, sender: userName, senderName: userName, userName: userName, ...payload });
     } catch (e) {}
   }, [userName]);
 
@@ -310,10 +345,12 @@ export default function PhotoboothView({
 
       // 1. Friend joined Photobooth (<10ms)
       if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'photobooth' || data.type === 'photobooth')) {
-        const partnerName = data.senderName?.toLowerCase() === current ? data.partnerName : data.senderName;
+        const isMeSender = (data.senderName || '').toLowerCase().trim() === current;
+        const partnerName = isMeSender ? data.partnerName : (data.senderName || data.userName);
         if (partnerName && partnerName.toLowerCase() !== current) {
           const friend = friendsList?.find(f => f.name.toLowerCase() === partnerName.toLowerCase());
-          const resolvedAvatar = data.senderAvatar 
+          const partnerAvatarFromEvent = isMeSender ? data.partnerAvatar : data.senderAvatar;
+          const resolvedAvatar = partnerAvatarFromEvent 
             || friend?.avatar 
             || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
             || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
@@ -321,18 +358,22 @@ export default function PhotoboothView({
           lastPartnerNameRef.current = partnerName;
           hasExitedRef.current = false;
           setJoinedUsers(prev => {
+            const partnerIsHost = !isHostRef.current;
             const exists = prev.find(u => u.name.toLowerCase() === partnerName.toLowerCase());
+            let updated: PhotoboothUser[];
             if (!exists) {
               showToast(`${partnerName} joined Photobooth!`, 3000);
-              return [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined' }];
-            } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
-              showToast(`${partnerName} accepted! Joined Photobooth`, 3000);
-              return prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
-                ? { ...u, avatar: resolvedAvatar, status: 'joined' }
+              updated = [...prev, { name: partnerName, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost }];
+            } else {
+              if (exists.status !== 'joined') {
+                showToast(`${partnerName} accepted! Joined Photobooth`, 3000);
+              }
+              updated = prev.map(u => u.name.toLowerCase() === partnerName.toLowerCase()
+                ? { ...u, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost }
                 : u
               );
             }
-            return prev;
+            return sortPhotoboothUsers(updated, userName, isHostRef.current);
           });
         }
       }
@@ -340,12 +381,84 @@ export default function PhotoboothView({
       // 2. Friend left or Host ended Photobooth (<10ms)
       if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'photobooth' || data.type === 'photobooth')) {
         const leaver = data.userName || data.senderName || data.sender;
+        lastPartnerLeaveTimeRef.current = Date.now();
         if (data.action === 'end') {
           showLeaveToastOnce('Photobooth session ended');
+          hasExitedRef.current = true;
           setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() === current));
+          isCapturingSequenceRef.current = false;
+          setIsCapturingSequence(false);
+          setActiveShotIndex(null);
+          setCountdown(null);
         } else if (leaver && leaver.toLowerCase() !== current) {
           showLeaveToastOnce(`${leaver} left Photobooth`);
           setJoinedUsers(prev => prev.filter(u => u.name.toLowerCase() !== leaver.toLowerCase()));
+          isCapturingSequenceRef.current = false;
+          setIsCapturingSequence(false);
+          setActiveShotIndex(null);
+          setCountdown(null);
+        }
+      }
+
+      // 3. Coordinated Real-Time Photo Capture Events
+      if (data.type === 'PHOTOBOOTH_START_CAPTURE') {
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender && !isCapturingSequenceRef.current) {
+          const targetLayout = COLLAGE_LAYOUTS.find(l => l.id === data.layoutId) || selectedLayout;
+          const targetFilter = FILTER_EFFECTS.find(f => f.id === data.filterId) || selectedFilter;
+          if (data.layoutId) setSelectedLayout(targetLayout);
+          if (data.filterId) setSelectedFilter(targetFilter);
+          runSynchronizedCaptureSequence(targetLayout, targetFilter, data.timerDuration || timerDuration);
+        }
+      }
+
+      if (data.type === 'PHOTOBOOTH_COUNTDOWN') {
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender) {
+          setCountdown(data.countdown);
+        }
+      }
+
+      if (data.type === 'PHOTOBOOTH_PHOTO_CAPTURED') {
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender) {
+          if (partnerPhotoResolverRef.current && data.photo) {
+            partnerPhotoResolverRef.current(data.photo);
+            partnerPhotoResolverRef.current = null;
+          } else if (data.photo) {
+            lastReceivedPartnerPhotoRef.current = { shotIndex: data.shotIndex, photo: data.photo };
+          }
+        }
+      }
+
+      if (data.type === 'PHOTOBOOTH_RETAKE') {
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender) {
+          isCapturingSequenceRef.current = false;
+          setIsCapturingSequence(false);
+          setActiveShotIndex(null);
+          setCountdown(null);
+          setCapturedPhotos([]);
+          setSelectedPhotoIndex(null);
+          showToast('Photos reset for retake', 2500);
+        }
+      }
+
+      if (data.type === 'PHOTOBOOTH_CONFIG_UPDATE') {
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        if (!isMeSender) {
+          if (data.layoutId) {
+            const l = COLLAGE_LAYOUTS.find(x => x.id === data.layoutId);
+            if (l) setSelectedLayout(l);
+          }
+          if (data.filterId) {
+            const f = FILTER_EFFECTS.find(x => x.id === data.filterId);
+            if (f) setSelectedFilter(f);
+          }
+          if (data.frameId) {
+            const fr = FRAME_COLORS.find(x => x.id === data.frameId);
+            if (fr) setSelectedFrame(fr);
+          }
         }
       }
 
@@ -356,7 +469,7 @@ export default function PhotoboothView({
     return () => {
       unsubscribe();
     };
-  }, [userName, friendsList, showToast, showLeaveToastOnce]);
+  }, [userName, friendsList, showToast, showLeaveToastOnce, selectedLayout, selectedFilter, timerDuration]);
 
   const userNameRef = useRef(userName);
   userNameRef.current = userName;
@@ -366,18 +479,20 @@ export default function PhotoboothView({
   const justJoinedTimeRef = useRef<number>(0);
   const justInvitedTimeRef = useRef<number>(0);
 
-  // Cleanup on unmount: if host, ensure the session is marked ended in the database
+  // Cleanup on unmount: ensure session leave or end is broadcast & marked in DB
   useEffect(() => {
     return () => {
-      if (isHostRef.current && !hasExitedRef.current) {
+      if (!hasExitedRef.current) {
         hasExitedRef.current = true;
+        const isHost = isHostRef.current;
+        const actionType = isHost ? 'end' : 'leave';
         const partnerName = lastPartnerNameRef.current;
         try {
           fetch('/api/invitations', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              action: 'end',
+              action: actionType,
               partnerName: partnerName || undefined,
               senderName: userNameRef.current,
               type: 'photobooth',
@@ -388,7 +503,13 @@ export default function PhotoboothView({
         } catch (e) {}
 
         try {
-          broadcastSyncRef.current('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Photobooth', action: 'end' });
+          broadcastSyncRef.current('SESSION_LEFT', { 
+            partnerName: partnerName || undefined, 
+            target: 'Photobooth', 
+            action: actionType,
+            userName: userNameRef.current,
+            senderName: userNameRef.current
+          });
         } catch (e) {}
       }
     };
@@ -408,17 +529,11 @@ export default function PhotoboothView({
         || `https://api.dicebear.com/7.x/adventurer/svg?seed=${initialFriend.name}&backgroundColor=A577FF`;
 
       setJoinedUsers(prev => {
-        if (!prev.some(u => u.name.toLowerCase() === initialFriend.name.toLowerCase())) {
-          return [...prev, {
-            name: initialFriend.name,
-            avatar: resolvedAvatar,
-            status: 'joined'
-          }];
-        }
-        return prev.map(u => u.name.toLowerCase() === initialFriend.name.toLowerCase()
-          ? { ...u, avatar: resolvedAvatar, status: 'joined' }
-          : u
-        );
+        const myAvatar = userImage || `https://api.dicebear.com/7.x/adventurer/svg?seed=${userName}&backgroundColor=F9EBD8`;
+        const myEntry: PhotoboothUser = { name: userName, avatar: myAvatar, status: 'joined', isHost: false };
+        const hostEntry: PhotoboothUser = { name: initialFriend.name, avatar: resolvedAvatar, status: 'joined', isHost: true };
+        const others = prev.filter(u => u.name.toLowerCase() !== userName.toLowerCase() && u.name.toLowerCase() !== initialFriend.name.toLowerCase());
+        return sortPhotoboothUsers([hostEntry, myEntry, ...others], userName, false);
       });
       showToast(`Joined Photobooth with ${initialFriend.name}`, 3000);
 
@@ -426,16 +541,18 @@ export default function PhotoboothView({
         onConsumeInitialFriend();
       }
     }
-  }, [initialFriend, friendsList, onConsumeInitialFriend, showToast]);
+  }, [initialFriend, friendsList, onConsumeInitialFriend, showToast, userImage, userName]);
 
   // Active Photobooth session sync (handles join, partner leave, host session end in real-time)
   useEffect(() => {
     const syncSession = () => {
       if (hasExitedRef.current) return;
+      if (Date.now() - lastPartnerLeaveTimeRef.current < 5000) return;
       fetch(`/api/invitations?username=${encodeURIComponent(userName || '')}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success || hasExitedRef.current) return;
+          if (Date.now() - lastPartnerLeaveTimeRef.current < 5000) return;
 
           const session = res.activePhotoboothSession;
 
@@ -452,24 +569,27 @@ export default function PhotoboothView({
                   || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
                   || `https://api.dicebear.com/7.x/adventurer/svg?seed=${session.partnerName}&backgroundColor=A577FF`;
 
+                const partnerIsHost = !session.isHost;
                 const exists = prev.find(u => u.name.toLowerCase() === session.partnerName.toLowerCase());
+                let updated: PhotoboothUser[];
                 if (!exists) {
                   showToast(`${session.partnerName} joined Photobooth!`, 3000);
-                  return [...prev, {
+                  updated = [...prev, {
                     name: session.partnerName,
                     avatar: resolvedAvatar,
-                    status: 'joined'
+                    status: 'joined',
+                    isHost: partnerIsHost
                   }];
-                } else if (exists.status !== 'joined' || exists.avatar !== resolvedAvatar) {
+                } else {
                   if (exists.status !== 'joined') {
                     showToast(`${session.partnerName} accepted! Joined Photobooth`, 3000);
                   }
-                  return prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() 
-                    ? { ...u, avatar: resolvedAvatar, status: 'joined' } 
+                  updated = prev.map(u => u.name.toLowerCase() === session.partnerName.toLowerCase() 
+                    ? { ...u, avatar: resolvedAvatar, status: 'joined', isHost: partnerIsHost } 
                     : u
                   );
                 }
-                return prev;
+                return sortPhotoboothUsers(updated, userName, isHostRef.current);
               });
             } else if (session.status === 'active') {
               // Host is in session. If partner was joined, partner left.
@@ -494,7 +614,7 @@ export default function PhotoboothView({
             // Session expired or host ended: keep only host and any active pending invites!
             setJoinedUsers(prev => {
               const pendingUsers = prev.filter(u => u.status === 'pending');
-              const hostUser = prev.find(u => u.name === userName) || { name: userName, avatar: currentUserAvatar, status: 'joined' };
+              const hostUser = prev.find(u => u.name === userName) || { name: userName, avatar: currentUserAvatar, status: 'joined', isHost: true };
               const otherJoined = prev.filter(u => u.name !== userName && u.status === 'joined');
               if (otherJoined.length > 0) {
                 showLeaveToastOnce(`Photobooth session ended`);
@@ -531,6 +651,7 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
+        senderImage: currentUserAvatar,
         type: 'photobooth',
         targetName: 'Photobooth'
       })
@@ -541,6 +662,8 @@ export default function PhotoboothView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: userName,
+        senderAvatar: currentUserAvatar,
+        senderImage: currentUserAvatar,
         target: 'Photobooth',
         targetName: 'Photobooth',
         activity: 'Photobooth',
@@ -565,6 +688,7 @@ export default function PhotoboothView({
     const partnerName = partner?.name || lastPartnerNameRef.current;
     const isHost = isHostRef.current;
     lastLeaveToastTimeRef.current = Date.now();
+    lastPartnerLeaveTimeRef.current = Date.now();
     showToast("Left Photobooth", 3000);
 
     fetch('/api/invitations', {
@@ -580,7 +704,13 @@ export default function PhotoboothView({
       keepalive: true
     })
     .then(() => {
-      broadcastSync('SESSION_LEFT', { partnerName: partnerName || undefined, target: 'Photobooth', action: isHost ? 'end' : 'leave' });
+      broadcastSync('SESSION_LEFT', { 
+        partnerName: partnerName || undefined, 
+        target: 'Photobooth', 
+        action: isHost ? 'end' : 'leave',
+        userName: userName,
+        senderName: userName
+      });
     })
     .catch(e => {});
 
@@ -692,8 +822,10 @@ export default function PhotoboothView({
     }
 
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+    const targetWidth = Math.min(video.videoWidth || 960, 960);
+    const targetHeight = Math.round(targetWidth * ((video.videoHeight || 720) / (video.videoWidth || 960)));
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
@@ -747,7 +879,7 @@ export default function PhotoboothView({
       setTimeout(() => setShowShutterBlink(false), 80);
     }
 
-    return canvas.toDataURL('image/jpeg', 0.95);
+    return canvas.toDataURL('image/jpeg', 0.88);
   };
 
   // Generate camera snapshot for friend's turn ("hasil jepretan orang berikutnya")
@@ -874,39 +1006,88 @@ export default function PhotoboothView({
     });
   };
 
-  // Start Multi-shot Capture Sequence
-  // Turn rotation: joinedUsers[shotIndex % joinedUsers.length]
-  // E.g., for 2 users [User, Jasper] and 4 cuts:
-  // Shot 1 (index 0) -> User
-  // Shot 2 (index 1) -> Jasper
-  // Shot 3 (index 2) -> User (rotates back to the 1st person on 3rd shot!)
-  // Shot 4 (index 3) -> Jasper
-  const handleStartCaptureSequence = async () => {
-    if (isCapturingSequence) return;
+  // Wait for partner's photo broadcast with a graceful timeout
+  const waitForPartnerPhoto = (
+    taker: PhotoboothUser,
+    filter: FilterEffect,
+    shotIndex: number,
+    timeoutMs: number
+  ): Promise<PhotoboothPhoto> => {
+    // Check if photo was already received and buffered
+    if (lastReceivedPartnerPhotoRef.current && lastReceivedPartnerPhotoRef.current.shotIndex === shotIndex) {
+      const p = lastReceivedPartnerPhotoRef.current.photo;
+      lastReceivedPartnerPhotoRef.current = null;
+      return Promise.resolve(p);
+    }
+
+    return new Promise(resolve => {
+      let resolved = false;
+      const timer = setTimeout(async () => {
+        if (!resolved) {
+          resolved = true;
+          partnerPhotoResolverRef.current = null;
+          // Graceful fallback to friend's avatar pose if partner camera/network timed out
+          const fallbackSrc = await generateFriendPhoto(
+            { name: taker.name, avatar: taker.avatar },
+            filter,
+            false
+          );
+          resolve({ src: fallbackSrc, taker, hasFlash: false });
+        }
+      }, timeoutMs);
+
+      partnerPhotoResolverRef.current = (photo: PhotoboothPhoto) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timer);
+          partnerPhotoResolverRef.current = null;
+          resolve(photo);
+        }
+      };
+    });
+  };
+
+  // Synchronized Multi-Shot Photobooth Capture Sequence
+  // Alternates between participants:
+  // Shot 0 (#1): Person #1 (Host, e.g. Ou)
+  // Shot 1 (#2): Person #2 (Guest, e.g. Eve)
+  // Shot 2 (#3): Person #1 (Host, rotates back!)
+  // Shot 3 (#4): Person #2 (Guest, rotates back!)
+  const runSynchronizedCaptureSequence = async (
+    layoutToUse: CollageLayout,
+    filterToUse: FilterEffect,
+    duration: number
+  ) => {
+    if (isCapturingSequenceRef.current) return;
+    isCapturingSequenceRef.current = true;
     setIsCapturingSequence(true);
+    setCapturedPhotos([]);
+    setSelectedPhotoIndex(null);
 
-    const neededPhotos = selectedLayout.cuts;
-    const currentPhotos = [...capturedPhotos];
+    const neededPhotos = layoutToUse.cuts;
+    const captured: PhotoboothPhoto[] = [];
 
-    for (let shotIndex = currentPhotos.length; shotIndex < neededPhotos; shotIndex++) {
+    for (let shotIndex = 0; shotIndex < neededPhotos; shotIndex++) {
+      if (!isCapturingSequenceRef.current) break;
+
       setActiveShotIndex(shotIndex);
-
       const taker = activeUsers[shotIndex % activeUsers.length] || activeUsers[0];
-      const isTakerMyself = taker.name === userName;
+      const isCurrentTakerMe = taker.name.toLowerCase() === (userName || '').toLowerCase();
 
-      // Run countdown timer for this shot
-      for (let sec = timerDuration; sec > 0; sec--) {
-        setCountdown(sec);
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-      setCountdown(null);
+      if (isCurrentTakerMe) {
+        // Local user's turn: run countdown and snap photo from local webcam
+        for (let sec = duration; sec > 0; sec--) {
+          if (!isCapturingSequenceRef.current) break;
+          setCountdown(sec);
+          broadcastSync('PHOTOBOOTH_COUNTDOWN', { countdown: sec, shotIndex });
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        setCountdown(null);
+        broadcastSync('PHOTOBOOTH_COUNTDOWN', { countdown: null, shotIndex });
 
-      // Snap the photo using the current live flash setting (reads isFlashOnRef.current)
-      const liveFlash = isFlashOnRef.current;
-      let photoData: string | null = null;
+        if (!isCapturingSequenceRef.current) break;
 
-      if (isTakerMyself) {
-        // Flash overlay or shutter blink for user
+        const liveFlash = isFlashOnRef.current;
         if (liveFlash) {
           setShowFlashOverlay(true);
           setTimeout(() => setShowFlashOverlay(false), 260);
@@ -915,22 +1096,35 @@ export default function PhotoboothView({
           setTimeout(() => setShowShutterBlink(false), 80);
         }
 
-        // Attempt live camera capture if webcam is ready
+        let photoData: string | null = null;
         if (cameraStatus === 'ready') {
           photoData = snapSinglePhoto();
         }
-
-        // Graceful fallback to styled avatar pose if camera not available or returned blank
         if (!photoData) {
           photoData = await generateFriendPhoto(
             { name: userName, avatar: currentUserAvatar },
-            selectedFilter,
+            filterToUse,
             liveFlash
           );
         }
+
+        const myPhoto: PhotoboothPhoto = {
+          src: photoData,
+          taker,
+          hasFlash: liveFlash
+        };
+
+        broadcastSync('PHOTOBOOTH_PHOTO_CAPTURED', { photo: myPhoto, shotIndex });
+        captured.push(myPhoto);
+        setCapturedPhotos([...captured]);
       } else {
-        // Friend's turn: Flash / Shutter
-        if (liveFlash) {
+        // Partner's turn: wait for partner photo broadcast
+        const partnerPhoto = await waitForPartnerPhoto(taker, filterToUse, shotIndex, (duration + 10) * 1000);
+
+        if (!isCapturingSequenceRef.current) break;
+
+        // Trigger flash / shutter blink on receiving partner's photo
+        if (partnerPhoto.hasFlash) {
           setShowFlashOverlay(true);
           setTimeout(() => setShowFlashOverlay(false), 260);
         } else {
@@ -938,31 +1132,41 @@ export default function PhotoboothView({
           setTimeout(() => setShowShutterBlink(false), 80);
         }
 
-        photoData = await generateFriendPhoto(taker, selectedFilter, liveFlash);
-      }
-
-      if (photoData) {
-        currentPhotos.push({ src: photoData, taker, hasFlash: liveFlash });
-        setCapturedPhotos([...currentPhotos]);
+        captured.push(partnerPhoto);
+        setCapturedPhotos([...captured]);
       }
 
       // Small pause between shots if more shots remain
-      if (shotIndex + 1 < neededPhotos) {
-        await new Promise(resolve => setTimeout(resolve, 1200));
+      if (shotIndex + 1 < neededPhotos && isCapturingSequenceRef.current) {
+        await new Promise(r => setTimeout(r, 1500));
       }
     }
 
     setActiveShotIndex(null);
+    setCountdown(null);
+    isCapturingSequenceRef.current = false;
     setIsCapturingSequence(false);
+  };
+
+  const handleStartCaptureSequence = () => {
+    if (isCapturingSequence) return;
+    broadcastSync('PHOTOBOOTH_START_CAPTURE', {
+      layoutId: selectedLayout.id,
+      filterId: selectedFilter.id,
+      timerDuration
+    });
+    runSynchronizedCaptureSequence(selectedLayout, selectedFilter, timerDuration);
   };
 
   // Retake all photos
   const handleRetakeAll = () => {
-    setCapturedPhotos([]);
+    isCapturingSequenceRef.current = false;
+    setIsCapturingSequence(false);
     setActiveShotIndex(null);
     setCountdown(null);
-    setIsCapturingSequence(false);
+    setCapturedPhotos([]);
     setSelectedPhotoIndex(null);
+    broadcastSync('PHOTOBOOTH_RETAKE', {});
   };
 
   // Delete individual photo
@@ -972,6 +1176,30 @@ export default function PhotoboothView({
       setSelectedPhotoIndex(null);
     } else if (selectedPhotoIndex !== null && selectedPhotoIndex > index) {
       setSelectedPhotoIndex(selectedPhotoIndex - 1);
+    }
+  };
+
+  const handleSelectLayout = (layout: CollageLayout) => {
+    setSelectedLayout(layout);
+    if (capturedPhotos.length > layout.cuts) {
+      setCapturedPhotos(prev => prev.slice(0, layout.cuts));
+    }
+    if (isHostRef.current) {
+      broadcastSync('PHOTOBOOTH_CONFIG_UPDATE', { layoutId: layout.id });
+    }
+  };
+
+  const handleSelectFrame = (frame: typeof FRAME_COLORS[0]) => {
+    setSelectedFrame(frame);
+    if (isHostRef.current) {
+      broadcastSync('PHOTOBOOTH_CONFIG_UPDATE', { frameId: frame.id });
+    }
+  };
+
+  const handleSelectFilter = (effect: FilterEffect) => {
+    setSelectedFilter(effect);
+    if (isHostRef.current) {
+      broadcastSync('PHOTOBOOTH_CONFIG_UPDATE', { filterId: effect.id });
     }
   };
 
@@ -1225,12 +1453,7 @@ export default function PhotoboothView({
               {COLLAGE_LAYOUTS.map((layout) => (
                 <div 
                   key={layout.id}
-                  onClick={() => {
-                    setSelectedLayout(layout);
-                    if (capturedPhotos.length > layout.cuts) {
-                      setCapturedPhotos(prev => prev.slice(0, layout.cuts));
-                    }
-                  }}
+                  onClick={() => handleSelectLayout(layout)}
                   className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
                     selectedLayout.id === layout.id 
                       ? 'border-[#A577FF] bg-[#A577FF]/15 shadow-[0_0_15px_rgba(165,119,255,0.2)] text-white' 
@@ -1263,7 +1486,7 @@ export default function PhotoboothView({
               {FRAME_COLORS.map((frame) => (
                 <div 
                   key={frame.id}
-                  onClick={() => setSelectedFrame(frame)}
+                  onClick={() => handleSelectFrame(frame)}
                   className={`aspect-square rounded-xl ${frame.bg} border cursor-pointer transition-all flex items-center justify-center shadow-xs ${
                     selectedFrame.id === frame.id 
                       ? 'ring-2 ring-[#A577FF] scale-105 border-transparent shadow-[0_0_12px_rgba(165,119,255,0.4)]' 
@@ -1304,7 +1527,7 @@ export default function PhotoboothView({
             {FILTER_EFFECTS.map((effect) => (
               <div 
                 key={effect.id}
-                onClick={() => setSelectedFilter(effect)}
+                onClick={() => handleSelectFilter(effect)}
                 className={`p-2.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
                   selectedFilter.id === effect.id 
                     ? 'border-[#A577FF] bg-[#A577FF]/15 shadow-[0_0_15px_rgba(165,119,255,0.2)] text-white' 
@@ -1441,11 +1664,40 @@ export default function PhotoboothView({
                 filter: selectedFilter.filter
               }}
               className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-                (!isCapturingSequence || isMyTurn) && cameraStatus === 'ready' 
+                (!isCapturingSequence ? (activeUsers.length === 1 || isHostRef.current) : isMyTurn) && cameraStatus === 'ready' 
                   ? 'opacity-100' 
                   : 'opacity-0 pointer-events-none'
               }`}
             />
+
+            {/* Guest Waiting for Host to Start Overlay */}
+            {!isCapturingSequence && activeUsers.length > 1 && !isHostRef.current && (
+              <div className="absolute inset-0 bg-[#070212]/85 backdrop-blur-xs flex flex-col items-center justify-center p-6 text-center z-15 select-none animate-in fade-in duration-300">
+                <div className="absolute w-64 h-64 rounded-full bg-[#A577FF]/15 blur-3xl pointer-events-none" />
+                <div className="relative flex flex-col items-center z-20">
+                  <div className="relative mb-3.5">
+                    <img 
+                      src={hostUser.avatar} 
+                      alt={hostUser.name} 
+                      className="w-20 h-20 rounded-full border-3 border-[#A577FF] object-cover shadow-[0_0_30px_rgba(165,119,255,0.4)]" 
+                    />
+                    <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-[#1B0F38] border-2 border-[#A577FF] flex items-center justify-center">
+                      <Clock size={12} className="text-[#A577FF] animate-spin" />
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-bold text-white mb-1">
+                    Menunggu {hostUser.name} Memulai Photobooth
+                  </h3>
+                  <p className="text-[11px] text-[#C4A6FF] max-w-xs mb-3">
+                    {hostUser.name} sebagai orang pertama (host) yang akan memulai sesi foto bersama. Kamera Anda siap saat giliran Anda tiba.
+                  </p>
+                  <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] text-gray-300">
+                    <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                    <span>Kamera Anda Siap • Giliran #{activeUsers.findIndex(u => u.name === userName) + 1}</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Dark Viewport for Other User's Turn - ONLY actively shown while capturing sequence is running! */}
             {isCapturingSequence && !isMyTurn && (
@@ -1471,18 +1723,18 @@ export default function PhotoboothView({
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className="w-2.5 h-2.5 rounded-full bg-green-400 animate-ping" />
                     <h3 className="text-base font-bold text-white tracking-wide">
-                      {currentTurnUser.name}'s Turn
+                      {currentTurnUser.name}'s Turn (Orang #{currentTurnIndex + 1})
                     </h3>
                   </div>
 
                   <p className="text-xs text-[#C4A6FF] font-medium max-w-xs mb-3">
                     {countdown !== null 
-                      ? `${currentTurnUser.name} is posing at their camera (${countdown}s)...` 
-                      : `Camera active on ${currentTurnUser.name}'s device`}
+                      ? `${currentTurnUser.name} sedang mengambil gambar (${countdown}s)...` 
+                      : `Kamera aktif di perangkat ${currentTurnUser.name}`}
                   </p>
 
                   <div className="flex items-center gap-2 bg-white/5 border border-white/10 px-3.5 py-1.5 rounded-full text-[11px] text-gray-300">
-                    <span>Private camera feed active on {currentTurnUser.name}'s device</span>
+                    <span>Giliran Anda berikutnya setelah {currentTurnUser.name}</span>
                   </div>
                 </div>
               </div>
@@ -1577,12 +1829,23 @@ export default function PhotoboothView({
               // Capturing in progress
               <button 
                 disabled
-                className="bg-white/15 text-gray-400 text-xs font-bold px-8 py-2.5 rounded-full shadow-xs cursor-not-allowed"
+                className="bg-white/15 text-gray-400 text-xs font-bold px-8 py-2.5 rounded-full shadow-xs cursor-not-allowed flex items-center gap-2"
               >
-                Capturing...
+                <Clock size={13} className="text-[#A577FF] animate-spin" />
+                <span>Mengambil Gambar...</span>
+              </button>
+            ) : activeUsers.length > 1 && !isHostRef.current ? (
+              // Guest waiting for host to start
+              <button 
+                disabled
+                className="bg-white/10 border border-white/10 text-gray-400 text-xs font-bold px-7 py-2.5 rounded-full shadow-xs cursor-not-allowed flex items-center gap-2"
+                title={`Menunggu ${hostUser.name} menekan tombol START`}
+              >
+                <Clock size={13} className="text-[#A577FF] animate-spin" />
+                <span>Menunggu {hostUser.name} Memulai...</span>
               </button>
             ) : (
-              // Ready to Start
+              // Host or solo ready to start
               <button 
                 onClick={handleStartCaptureSequence}
                 className="bg-gradient-to-r from-[#A577FF] to-[#7065D4] hover:from-[#B58FFF] hover:to-[#857AE6] text-white text-xs font-black tracking-wider uppercase px-9 py-2.5 rounded-full shadow-[0_0_20px_rgba(165,119,255,0.5)] transition-all cursor-pointer active:scale-95 flex items-center gap-2"

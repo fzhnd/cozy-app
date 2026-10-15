@@ -7,6 +7,7 @@ class RealtimeClient {
   private listeners: Set<RealtimeListener> = new Set();
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isConnecting: boolean = false;
+  private clientId: string = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   constructor() {
     if (typeof window !== "undefined") {
@@ -21,6 +22,7 @@ class RealtimeClient {
         this.broadcastChannel = new BroadcastChannel("cozy_realtime_sync");
         this.broadcastChannel.onmessage = (event) => {
           if (event.data) {
+            if (event.data._clientId && event.data._clientId === this.clientId) return;
             this.notifyListeners(event.data);
           }
         };
@@ -41,13 +43,13 @@ class RealtimeClient {
 
       es.onopen = () => {
         this.isConnecting = false;
-        // console.log("[CozyRealtime] Connected to real-time event stream");
       };
 
       es.onmessage = (event) => {
         try {
           if (!event.data || event.data === "connected") return;
           const data = JSON.parse(event.data);
+          if (data._clientId && data._clientId === this.clientId) return;
           this.notifyListeners(data);
         } catch (err) {
           // Non-JSON or heartbeat
@@ -87,10 +89,19 @@ class RealtimeClient {
   }
 
   public broadcastLocal(payload: any) {
+    const msg = { ...payload, _clientId: this.clientId };
     try {
-      this.broadcastChannel?.postMessage(payload);
+      this.broadcastChannel?.postMessage(msg);
     } catch (e) {}
     this.notifyListeners(payload);
+
+    try {
+      fetch("/api/realtime", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(msg)
+      }).catch(() => {});
+    } catch (e) {}
   }
 
   private notifyListeners(data: any) {

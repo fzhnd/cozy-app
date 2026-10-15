@@ -211,10 +211,12 @@ export default function MusicView({
 
       // 1. Friend joined Listening Together (<10ms)
       if (data.type === 'SESSION_JOINED' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
-        const partnerName = (data.senderName || data.sender)?.toLowerCase() === current ? data.partnerName : (data.senderName || data.sender);
+        const isMeSender = (data.senderName || data.sender || '').toLowerCase().trim() === current;
+        const partnerName = isMeSender ? data.partnerName : (data.senderName || data.sender);
         if (partnerName && partnerName.toLowerCase() !== current) {
           const friend = friendsList?.find((f: any) => f.name.toLowerCase() === partnerName.toLowerCase());
-          const resolvedAvatar = data.senderAvatar 
+          const partnerAvatarFromEvent = isMeSender ? data.partnerAvatar : data.senderAvatar;
+          const resolvedAvatar = partnerAvatarFromEvent 
             || friend?.avatar 
             || (friend?.seed ? `https://api.dicebear.com/7.x/adventurer/svg?seed=${friend.seed}&backgroundColor=A577FF` : null)
             || `https://api.dicebear.com/7.x/adventurer/svg?seed=${partnerName}&backgroundColor=A577FF`;
@@ -230,6 +232,7 @@ export default function MusicView({
       // 2. Friend left or Host ended Listening Together (<10ms)
       if (data.type === 'SESSION_LEFT' && (data.target?.toLowerCase() === 'listening together' || data.type === 'listening together')) {
         const leaver = data.userName || data.senderName || data.sender;
+        lastPartnerLeaveTimeRef.current = Date.now();
         if (data.action === 'end') {
           showLeaveToastOnce('Host ended the listening session');
           hasExitedRef.current = true; // Protect from stale DB resurrection!
@@ -264,6 +267,7 @@ export default function MusicView({
   const broadcastSyncRef = useRef(broadcastSync);
   broadcastSyncRef.current = broadcastSync;
   const hasExitedRef = useRef(false);
+  const lastPartnerLeaveTimeRef = useRef<number>(0);
 
   // Cleanup on unmount: ensure session leave or end is sent to the server & broadcast
   useEffect(() => {
@@ -326,6 +330,7 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderImage: userImage,
         type: 'activity',
         targetName: 'Listening Together'
       })
@@ -336,6 +341,7 @@ export default function MusicView({
         receiverName: friend.name,
         receiverEmail: friend.email,
         senderName: currentUserName,
+        senderAvatar: userImage,
         target: 'Listening Together',
         targetName: 'Listening Together',
         activity: 'Listening Together',
@@ -360,10 +366,12 @@ export default function MusicView({
     }
 
     const syncSession = () => {
+      if (Date.now() - lastPartnerLeaveTimeRef.current < 5000) return;
       fetch(`/api/invitations?username=${encodeURIComponent(currentUserName)}`)
         .then(res => res.json())
         .then(res => {
           if (!res.success) return;
+          if (Date.now() - lastPartnerLeaveTimeRef.current < 5000) return;
 
           const session = res.activeListeningSession;
 
@@ -1448,6 +1456,7 @@ export default function MusicView({
                   isHostRef.current = false;
                   if (onLeaveSession) onLeaveSession();
                   lastLeaveToastTimeRef.current = Date.now();
+                  lastPartnerLeaveTimeRef.current = Date.now();
                   showToast(wasWaiting ? "Invitation cancelled" : "Left the listening session", 3000);
                   fetch('/api/invitations', {
                     method: 'PATCH',
@@ -1462,7 +1471,13 @@ export default function MusicView({
                     keepalive: true
                   })
                   .then(() => {
-                    broadcastSync('SESSION_LEFT', { partnerName: leavingPartner, target: 'Listening Together', action: isHost ? 'end' : 'leave' });
+                    broadcastSync('SESSION_LEFT', { 
+                      partnerName: leavingPartner, 
+                      target: 'Listening Together', 
+                      action: isHost ? 'end' : 'leave',
+                      userName: currentUserName,
+                      senderName: currentUserName
+                    });
                   })
                   .catch(e => {});
                 }}

@@ -1210,7 +1210,13 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Watch Together' });
+        broadcastSync('SESSION_JOINED', { 
+          partnerName: n.name, 
+          partnerAvatar: partnerAvatar,
+          senderName: userName,
+          senderAvatar: userImage,
+          target: 'Watch Together' 
+        });
       })
       .catch(e => console.error("Error marking watch invitation accepted:", e));
     } else if (n.activity === 'Listening Together') {
@@ -1239,7 +1245,13 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Listening Together' });
+        broadcastSync('SESSION_JOINED', { 
+          partnerName: n.name, 
+          partnerAvatar: partnerAvatar,
+          senderName: userName,
+          senderAvatar: userImage,
+          target: 'Listening Together' 
+        });
       })
       .catch(e => console.error("Error marking invitation accepted:", e));
     } else if (n.type === 'photobooth' || n.activity === 'Photobooth') {
@@ -1248,7 +1260,8 @@ export default function CozyApp() {
       setActivePhotoboothFriend({
         ...(foundFriend || {}),
         name: n.name,
-        avatar: partnerAvatar
+        avatar: partnerAvatar,
+        isHost: true
       });
       setActiveTab('photobooth');
 
@@ -1268,7 +1281,13 @@ export default function CozyApp() {
       })
       .then(() => {
         refreshInvitations();
-        broadcastSync('SESSION_JOINED', { partnerName: n.name, target: 'Photobooth' });
+        broadcastSync('SESSION_JOINED', { 
+          partnerName: n.name, 
+          partnerAvatar: partnerAvatar,
+          senderName: userName,
+          senderAvatar: userImage,
+          target: 'Photobooth' 
+        });
       })
       .catch(e => console.error("Error marking photobooth invitation accepted:", e));
     }
